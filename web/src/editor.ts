@@ -1,7 +1,7 @@
 // The editor (board WebDocEditor): the page shared live with everyone in
 // it (their cursors, their changes), editing or suggesting, comments on
 // a passage, the suggestions to accept or reject, sending for approval.
-import { ApiError, LitElement, LocalizeController, call, controls, css, customElement, html, nothing, query, state } from "ortus-kit";
+import { ApiError, LitElement, LocalizeController, call, controls, css, customElement, html, nothing, property, query, state } from "ortus-kit";
 import { baseKeymap, setBlockType, toggleMark } from "prosemirror-commands";
 import { keymap } from "prosemirror-keymap";
 import { EditorState, TextSelection, type Transaction } from "prosemirror-state";
@@ -61,6 +61,10 @@ export class OrtusDocsEditor extends LitElement {
         grid-template-rows: auto auto 1fr;
         min-block-size: 100vh;
         color: var(--ortus-text);
+      }
+      :host([embedded]) {
+        min-block-size: 0;
+        block-size: 100%;
       }
       header {
         display: flex;
@@ -361,8 +365,14 @@ export class OrtusDocsEditor extends LitElement {
   private view: EditorView | null = null;
   private sync: Sync | null = null;
 
+  /** The document to open (another app shows it: a call's stage); by
+   * default the address's ?doc=. */
+  @property() doc = "";
+  /** Shown inside another screen: no way back, no sharing or approval. */
+  @property({ type: Boolean, reflect: true }) embedded = false;
+
   private docId(): string {
-    return new URLSearchParams(location.search).get("doc") ?? "";
+    return this.doc || (new URLSearchParams(location.search).get("doc") ?? "");
   }
 
   override connectedCallback(): void {
@@ -629,7 +639,7 @@ export class OrtusDocsEditor extends LitElement {
     const unique = [...new Map(this.people.map((p) => [p.user, p])).values()];
     const threads = [...new Set(this.comments.filter((c) => !c.resolved).map((c) => c.thread))];
     return html`<header>
-        <button class="back" aria-label=${t(this.localize, "back")} @click=${() => location.assign("/drive")}>${document.dir === "rtl" ? "›" : "‹"}</button>
+        ${this.embedded ? nothing : html`<button class="back" aria-label=${t(this.localize, "back")} @click=${() => location.assign("/drive")}>${document.dir === "rtl" ? "›" : "‹"}</button>`}
         <div class="title">
           <input aria-label=${t(this.localize, "docName")} .value=${o.name} ?readonly=${!this.canEdit()} @change=${(e: Event) => this.rename((e.target as HTMLInputElement).value)} />
           <small>${[...o.path, this.saved ? t(this.localize, "saved") : t(this.localize, "saving")].join(" / ").replace(/ \/ ([^/]+)$/, " · $1")}</small>
@@ -641,10 +651,10 @@ export class OrtusDocsEditor extends LitElement {
         <select class="mode" aria-label=${t(this.localize, "mode")} .value=${this.mode} @change=${(e: Event) => ((this.mode = (e.target as HTMLSelectElement).value as Mode), this.view?.setProps({}))}>
           ${allowed.map(([m, key]) => html`<option value=${m} ?selected=${m === this.mode}>${t(this.localize, key)}</option>`)}
         </select>
-        ${this.canEdit() && review?.state !== "open" ? html`<button class="button" @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.showModal()}>${t(this.localize, "sendForApproval")}</button>` : nothing}
+        ${this.embedded ? nothing : html`${this.canEdit() && review?.state !== "open" ? html`<button class="button" @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.showModal()}>${t(this.localize, "sendForApproval")}</button>` : nothing}
         ${this.canEdit() && review?.state === "open" ? html`<button class="button" @click=${this.withdraw}>${t(this.localize, "withdraw")}</button>` : nothing}
         ${this.canPublish ? html`<button class="button" ?disabled=${this.published} @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.publish")?.showModal()}>${this.published ? t(this.localize, "publishedMustRead") : t(this.localize, "publishMustRead")}</button>` : nothing}
-        <button class="button primary" @click=${() => location.assign(`/drive?file=${encodeURIComponent(o.id)}&share=1`)}>${t(this.localize, "share")}</button>
+        <button class="button primary" @click=${() => location.assign(`/drive?file=${encodeURIComponent(o.id)}&share=1`)}>${t(this.localize, "share")}</button>`}
       </header>
       <div class="tools" role="toolbar" aria-label=${t(this.localize, "format")}>
         <select aria-label=${t(this.localize, "style")} @change=${(e: Event) => this.block((e.target as HTMLSelectElement).value)}>
