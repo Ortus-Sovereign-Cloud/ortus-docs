@@ -709,6 +709,22 @@ async fn decide(
         .with(json!({"review": id, "step": n})),
     )
     .await;
+    // The whole route approved: other systems hear of it (approval.done).
+    let finished = s
+        .query("SELECT state FROM docs_reviews WHERE id = $1", &[id.into()])
+        .await?
+        .first()
+        .is_some_and(|r| r.text(0) == Some("approved"));
+    if approved && finished {
+        ortus_core::auth::audit(
+            instance,
+            ortus_core::audit::Event::new("docs.review_done", ortus_core::audit::Outcome::Done)
+                .by(&me.id)
+                .on(&doc)
+                .with(json!({"review": id})),
+        )
+        .await;
+    }
     Ok(ok(&review_json(instance, id).await?))
 }
 

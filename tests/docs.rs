@@ -1031,6 +1031,13 @@ fn a_route_signs_the_pdf_and_files_it_to_the_case() {
             (status, done["state"].clone(), done["record"].clone()),
             "{name}: {done}"
         );
+        // Other systems hear the route is done (approval.done webhooks).
+        let done_events = ortus_core::runtime::block_on(instance.store.query(
+            "SELECT COUNT(*) FROM core_audit WHERE action = 'docs.review_done'",
+            &[],
+        ))
+        .unwrap();
+        assert_eq!(Some(1), done_events[0].int(0), "{name}");
 
         // Filed once, to the case, signed by both, readable by the route's people.
         let filed = records.0.lock().unwrap().clone();
