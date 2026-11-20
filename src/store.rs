@@ -103,6 +103,11 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "the channel a filed route tells",
         sql: "ALTER TABLE docs_reviews ADD COLUMN channel TEXT",
     },
+    Migration {
+        version: 5,
+        name: "the drive owner of each document",
+        sql: "ALTER TABLE docs_documents ADD COLUMN drive_owner TEXT",
+    },
 ];
 
 /// An update larger than this is refused.
@@ -537,10 +542,14 @@ pub async fn forget(tx: &mut dyn AsyncTx, user: &str) -> StoreResult<()> {
 }
 
 /// Documents and their owners, for the sweep.
-pub async fn documents(store: &dyn AsyncStore) -> StoreResult<Vec<(String, String)>> {
+/// Every document: its id, who made it, and the owner of its drive item
+/// when known.
+pub async fn documents(
+    store: &dyn AsyncStore,
+) -> StoreResult<Vec<(String, String, Option<String>)>> {
     Ok(store
         .query(
-            "SELECT doc_id, owner_id FROM docs_documents ORDER BY doc_id",
+            "SELECT doc_id, owner_id, drive_owner FROM docs_documents ORDER BY doc_id",
             &[],
         )
         .await?
@@ -549,7 +558,18 @@ pub async fn documents(store: &dyn AsyncStore) -> StoreResult<Vec<(String, Strin
             (
                 r.text(0).unwrap_or_default().to_string(),
                 r.text(1).unwrap_or_default().to_string(),
+                r.text(2).map(str::to_string),
             )
         })
         .collect())
+}
+
+pub async fn set_drive_owner(store: &dyn AsyncStore, doc: &str, owner: &str) -> StoreResult<()> {
+    store
+        .execute(
+            "UPDATE docs_documents SET drive_owner = $1 WHERE doc_id = $2",
+            &[owner.into(), doc.into()],
+        )
+        .await?;
+    Ok(())
 }

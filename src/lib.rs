@@ -4,6 +4,7 @@
 //! to a program through [`apps`].
 
 pub mod api;
+pub mod guard;
 pub mod pdf;
 pub mod review;
 pub mod store;
@@ -71,7 +72,21 @@ pub async fn sweep(instance: &Instance) -> Result<(), String> {
     for review in unfiled {
         let _ = review::file_record(instance, &review).await;
     }
-    for (doc, owner) in store::documents(s).await.map_err(|e| e.to_string())? {
+    for (doc, creator, drive_owner) in store::documents(s).await.map_err(|e| e.to_string())? {
+        // Whether the drive item is gone is asked as its owner: the person
+        // who made the document may have lost the share, or left, while the
+        // document lives on in someone else's folder.
+        let owner = match drive_owner {
+            Some(owner) => owner,
+            None => match drive.describe(&creator, &doc).await {
+                Ok(Some(item)) => {
+                    let _ = store::set_drive_owner(s, &doc, &item.owner).await;
+                    continue;
+                }
+                // Not known yet and not seen: left alone.
+                _ => continue,
+            },
+        };
         if let Ok(None) = drive.describe(&owner, &doc).await {
             // The routes' PDFs go too (they carry names and signatures).
             let reviews: Vec<String> = s

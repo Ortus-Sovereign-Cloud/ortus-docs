@@ -117,15 +117,24 @@ async fn create(request: &Request, instance: &Arc<Instance>) -> Result<Response,
             code: "drive",
             message: e,
         })?;
-    // Kept to find documents the drive no longer has (the sweep).
+    // Kept to find documents the drive no longer has (the sweep), asked
+    // as the drive item's owner (the folder's, in a shared folder).
+    let drive_owner = drive(instance)
+        .await?
+        .describe(&me.id, &made.id)
+        .await
+        .ok()
+        .flatten()
+        .map(|item| item.owner);
     instance
         .store
         .execute(
-            "INSERT INTO docs_documents (doc_id, owner_id, created_at) VALUES ($1, $2, $3)",
+            "INSERT INTO docs_documents (doc_id, owner_id, created_at, drive_owner) VALUES ($1, $2, $3, $4)",
             &[
                 made.id.as_str().into(),
                 me.id.as_str().into(),
                 store::now().into(),
+                drive_owner.into(),
             ],
         )
         .await?;
@@ -221,6 +230,22 @@ async fn update(
         .take(40)
         .collect();
     let s = instance.store.as_ref();
+    if rank(&item.role) < rank("edit") {
+        // Someone who may only comment: comments and suggestions in their
+        // own name, nothing of the text (checked here, not only in their
+        // editor).
+        let (base, _, after) = store::state(s, &item.id).await?;
+        let mut parts: Vec<&[u8]> = Vec::new();
+        if let Some(b) = &base {
+            parts.push(b);
+        }
+        parts.extend(after.iter().map(|(_, u)| u.as_slice()));
+        crate::guard::commenter_may(&parts, bytes, &me.name).map_err(|message| ApiError {
+            status: 403,
+            code: "comment_only",
+            message,
+        })?;
+    }
     let (loose, held) = store::loose(s, &item.id).await?;
     if loose >= store::MAX_LOOSE || held + bytes_len(request) > store::MAX_LOOSE_BYTES {
         return Err(ApiError {

@@ -7,7 +7,11 @@
 all-features = true
 
 [advisories]
-ignore = []
+ignore = [
+    # smallstr is unmaintained (no known vulnerability); it comes only with
+    # yrs, which checks commenters' document updates on the server.
+    { id = "RUSTSEC-2026-0215", reason = "unmaintained, no vulnerability; only through yrs" },
+]
 
 [licenses]
 allow = [

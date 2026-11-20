@@ -8,6 +8,7 @@ repository = "https://github.com/Ortus-Sovereign-Cloud/ortus-docs"
 publish = false
 
 [dependencies]
+yrs = "0.28"
 base64 = "0.22"
 rust-embed = "8.14.0"
 rust-web-server = "18.34"
