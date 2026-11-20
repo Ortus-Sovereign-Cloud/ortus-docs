@@ -440,8 +440,11 @@ async fn changes(
     let before = store::version_text(s, &item.id, since)
         .await?
         .unwrap_or_default();
-    let (now, _) = store::text(s, &item.id).await?;
-    Ok(ok(&json!({ "before": before, "now": now })))
+    let (now, structure) = store::text(s, &item.id).await?;
+    let doc: Value = serde_json::from_str(&structure).unwrap_or(Value::Null);
+    Ok(ok(
+        &json!({ "before": before, "now": now, "doc": doc, "name": item.name, "label": item.label }),
+    ))
 }
 
 #[derive(Deserialize)]
