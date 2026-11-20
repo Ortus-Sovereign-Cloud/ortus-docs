@@ -107,10 +107,14 @@ fn a_document_becomes_a_pdf_whose_text_reads_back() {
                 || ('\u{0600}'..='\u{06FF}').contains(&c)),
         "no Arabic in:\n{text}"
     );
-    assert!(
-        text.contains("3 / 3") || text.contains("2 / 2") || text.contains(" / "),
-        "page numbers"
-    );
+    // Page numbers ("1 / 2"): text extractors differ in the spacing and
+    // line breaks they put around a footer.
+    let squeezed: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+    let numbered = squeezed
+        .as_bytes()
+        .windows(3)
+        .any(|w| w[0].is_ascii_digit() && w[1] == b'/' && w[2].is_ascii_digit());
+    assert!(numbered, "no page numbers in:\n{text}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
