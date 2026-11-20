@@ -115,6 +115,7 @@ const en = {
   publish: "Publish",
   openPdf: "Open the PDF you sign",
   settleFirst: "Accept or reject the open suggestions first.",
+  tellChannel: "Tell a chat channel when it is filed",
   now: "now",
 };
 

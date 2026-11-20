@@ -353,6 +353,7 @@ export class OrtusDocsEditor extends LitElement {
   @state() private draftComment: { quote: string; from: number; to: number } | null = null;
   @state() private steps: { email: string; title: string; due: string; kind: "approve" | "sign" }[] = [{ email: "", title: "", due: "", kind: "approve" }];
   @state() private caseRef = "";
+  @state() private channelRef = "";
   /** An administrator with the records app may publish a must-read. */
   @state() private canPublish = false;
   @state() private published = false;
@@ -570,7 +571,7 @@ export class OrtusDocsEditor extends LitElement {
     try {
       await this.sync?.settle();
       const steps = this.steps.filter((s) => s.email.trim()).map((s) => ({ email: s.email.trim(), title: s.title.trim(), dueAt: s.due ? Date.parse(s.due) : undefined, kind: s.kind }));
-      await call("POST", `/docs/documents/${encodeURIComponent(this.docId())}/reviews`, { steps, case: this.caseRef.trim() || undefined });
+      await call("POST", `/docs/documents/${encodeURIComponent(this.docId())}/reviews`, { steps, case: this.caseRef.trim() || undefined, channel: this.channelRef.trim() || undefined });
       this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.close();
       const opened = await call<Opened>("GET", `/docs/documents/${encodeURIComponent(this.docId())}`);
       if (this.opened) this.opened = { ...this.opened, review: opened.review };
@@ -726,6 +727,7 @@ export class OrtusDocsEditor extends LitElement {
           </div>
           <button type="button" class="button" @click=${() => (this.steps = [...this.steps, { email: "", title: "", due: "", kind: "approve" }])}>${t(this.localize, "addStep")}</button>
           <label>${t(this.localize, "caseRef")}<input class="input" .value=${this.caseRef} placeholder="2026/EM/0114" @input=${(e: Event) => (this.caseRef = (e.target as HTMLInputElement).value)} /></label>
+          <label>${t(this.localize, "tellChannel")}<input class="input" .value=${this.channelRef} placeholder="#flood-response" @input=${(e: Event) => (this.channelRef = (e.target as HTMLInputElement).value)} /></label>
           ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
           <div class="row"><button type="button" class="button" @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.close()}>${t(this.localize, "cancel")}</button><button class="button primary">${t(this.localize, "send")}</button></div>
         </form>

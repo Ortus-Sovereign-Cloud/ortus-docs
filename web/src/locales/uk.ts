@@ -114,6 +114,7 @@ const messages: Record<DocsKey, DocsMessage> = {
   publish: "Опублікувати",
   openPdf: "Відкрити PDF, який ви підписуєте",
   settleFirst: "Спочатку прийміть або відхиліть відкриті пропозиції.",
+  tellChannel: "Повідомити канал чату, коли збережено",
   now: "зараз",
 };
 

@@ -214,7 +214,7 @@ async fn review(instance: &Instance, id: &str) -> Result<Option<Value>, ApiError
     Ok(Some(json!({
         "id": r.text(0), "doc": r.text(1), "by": name_of(instance, &by).await, "byId": by, "state": r.text(3), "version": r.int(4),
         "previousVersion": previous, "note": r.text(5), "at": r.int(6), "steps": steps,
-        "case": r.text(7), "signed": r.text(8).is_some(), "record": r.text(9),
+        "case": r.text(7), "signed": r.text(8).is_some(), "record": r.text(9).filter(|p| *p != "filing"),
     })))
 }
 
@@ -237,6 +237,8 @@ struct Send {
     note: String,
     /// The case the signed PDF is filed to ("2026/EM/0114").
     case: Option<String>,
+    /// A chat channel told when it is filed ("flood-response").
+    channel: Option<String>,
 }
 
 /// Sends a document for approval: a version is named, and the first
@@ -348,8 +350,8 @@ async fn send(
     };
     let mut tx = s.begin().await?;
     tx.execute(
-        "INSERT INTO docs_reviews (id, doc_id, created_by, state, version, note, created_at, case_ref, pdf_key) VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8)",
-        &[review.as_str().into(), item.id.as_str().into(), me.id.as_str().into(), version.into(), clean(&input.note, 1000).into(), now().into(), case.clone().into(), pdf_key.clone().into()],
+        "INSERT INTO docs_reviews (id, doc_id, created_by, state, version, note, created_at, case_ref, pdf_key, channel) VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8, $9)",
+        &[review.as_str().into(), item.id.as_str().into(), me.id.as_str().into(), version.into(), clean(&input.note, 1000).into(), now().into(), case.clone().into(), pdf_key.clone().into(), input.channel.as_deref().map(|c| clean(c.trim_start_matches('#'), 80)).filter(|c| !c.is_empty()).into()],
     )
     .await?;
     for (n, (step, user)) in input.steps.iter().zip(&people).enumerate() {
@@ -395,7 +397,7 @@ pub(crate) async fn signing(
 pub async fn file_record(instance: &Instance, review: &str) -> Result<(), String> {
     let s = instance.store.as_ref();
     let rows = s
-        .query("SELECT doc_id, created_by, case_ref, pdf_key, record_path, state FROM docs_reviews WHERE id = $1", &[review.into()])
+        .query("SELECT doc_id, created_by, case_ref, pdf_key, record_path, state, channel FROM docs_reviews WHERE id = $1", &[review.into()])
         .await
         .map_err(|e| e.to_string())?;
     let Some(r) = rows.first() else { return Ok(()) };
@@ -477,6 +479,7 @@ async fn file_claimed(
             pdf: &pdf,
             source: &format!("/docs?doc={doc}"),
             readers: &readers,
+            channel: r.text(6),
         })
         .await?;
     Ok(filed.path)

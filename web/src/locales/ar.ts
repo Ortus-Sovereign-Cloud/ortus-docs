@@ -114,6 +114,7 @@ const messages: Record<DocsKey, DocsMessage> = {
   publish: "نشر",
   openPdf: "افتح ملف PDF الذي توقّعه",
   settleFirst: "اقبل الاقتراحات المفتوحة أو ارفضها أولًا.",
+  tellChannel: "أخبر قناة دردشة عند الحفظ",
   now: "الآن",
 };
 

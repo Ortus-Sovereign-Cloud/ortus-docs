@@ -98,6 +98,11 @@ pub const MIGRATIONS: &[Migration] = &[
     ALTER TABLE docs_reviews ADD COLUMN pdf_key TEXT;
     ALTER TABLE docs_reviews ADD COLUMN record_path TEXT",
     },
+    Migration {
+        version: 4,
+        name: "the channel a filed route tells",
+        sql: "ALTER TABLE docs_reviews ADD COLUMN channel TEXT",
+    },
 ];
 
 /// An update larger than this is refused.

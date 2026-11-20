@@ -114,6 +114,7 @@ const messages: Record<DocsKey, DocsMessage> = {
   publish: "Veröffentlichen",
   openPdf: "Das PDF öffnen, das Sie unterschreiben",
   settleFirst: "Nehmen Sie offene Vorschläge zuerst an oder lehnen Sie sie ab.",
+  tellChannel: "Einen Chat-Kanal benachrichtigen, wenn abgelegt",
   now: "jetzt",
 };
 

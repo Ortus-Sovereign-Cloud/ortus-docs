@@ -114,6 +114,7 @@ const messages: Record<DocsKey, DocsMessage> = {
   publish: "Publier",
   openPdf: "Ouvrir le PDF que vous signez",
   settleFirst: "Acceptez ou refusez d’abord les suggestions ouvertes.",
+  tellChannel: "Prévenir un canal de discussion une fois classé",
   now: "maintenant",
 };
 
