@@ -85,6 +85,8 @@ const en = {
   pdf: "PDF",
   importWord: "Import a Word file",
   notWord: "That file could not be read as a Word document (.docx).",
+  editedSince: "This is version {n} as it was sent; the document was edited since.",
+  withdraw: "Withdraw",
   now: "now",
 };
 

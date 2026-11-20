@@ -80,8 +80,21 @@ async fn add_comment(
     if text.is_empty() {
         return Err(ApiError::bad_request("A comment says something."));
     }
+    // Assigned only to someone who can open the document.
     let assigned = match input.assign.as_deref().filter(|a| !a.trim().is_empty()) {
-        Some(email) => Some(user_by_email(instance, email).await?.id),
+        Some(email) => {
+            let refuse = || {
+                ApiError::bad_request(format!(
+                    "{} cannot open this document; share it first.",
+                    email.trim()
+                ))
+            };
+            let user = user_by_email(instance, email).await.map_err(|_| refuse())?;
+            document(instance, &user.id, &item.id, "view")
+                .await
+                .map_err(|_| refuse())?;
+            Some(user.id)
+        }
         None => None,
     };
     let comment = id("c");
@@ -254,7 +267,13 @@ async fn send(
     }
     let mut people = Vec::new();
     for step in &input.steps {
-        let user = user_by_email(instance, &step.email).await?;
+        // Unknown addresses and people without access answer alike.
+        let user = user_by_email(instance, &step.email).await.map_err(|_| {
+            ApiError::bad_request(format!(
+                "{} cannot open this document; share it first.",
+                step.email.trim()
+            ))
+        })?;
         // A reviewer must be able to read it.
         if document(instance, &user.id, &item.id, "view")
             .await
@@ -262,7 +281,7 @@ async fn send(
         {
             return Err(ApiError::bad_request(format!(
                 "{} cannot open this document; share it first.",
-                user.name
+                step.email.trim()
             )));
         }
         people.push(user.id);
@@ -333,20 +352,19 @@ async fn decide(
         tx.rollback().await?;
         return Err(ApiError::forbidden());
     };
-    tx.execute(
-        "UPDATE docs_review_steps SET state = $1, comment = $2, decided_at = $3 WHERE review_id = $4 AND n = $5",
-        &[if input.approve { "approved" } else { "returned" }.into(), comment.as_str().into(), now().into(), id.into(), n.into()],
+    // Only a step still waiting for this person is decided: a second
+    // click (or a second tab) finds it decided already.
+    let decided = tx.execute(
+        "UPDATE docs_review_steps SET state = $1, comment = $2, decided_at = $3 WHERE review_id = $4 AND n = $5 AND user_id = $6 AND state = 'current'",
+        &[if input.approve { "approved" } else { "returned" }.into(), comment.as_str().into(), now().into(), id.into(), n.into(), me.id.as_str().into()],
     )
     .await?;
+    if decided != 1 {
+        tx.rollback().await?;
+        return Err(ApiError::conflict("This step is already decided."));
+    }
     if input.approve {
-        let next = tx.execute("UPDATE docs_review_steps SET state = 'current' WHERE review_id = $1 AND n = $2 AND state = 'waiting'", &[id.into(), (n + 1).into()]).await?;
-        if next == 0 {
-            tx.execute(
-                "UPDATE docs_reviews SET state = 'approved' WHERE id = $1",
-                &[id.into()],
-            )
-            .await?;
-        }
+        store::advance(tx.as_mut(), id).await?;
     } else {
         tx.execute(
             "UPDATE docs_reviews SET state = 'returned' WHERE id = $1",
@@ -391,6 +409,75 @@ async fn get_review(
     Ok(ok(&v))
 }
 
+/// An editor of the document withdraws a route that is still open.
+async fn cancel(
+    request: &Request,
+    params: &PathParams,
+    instance: &Arc<Instance>,
+) -> Result<Response, ApiError> {
+    let me = signed(request, instance).await?;
+    let id = params.get("review").unwrap_or_default();
+    let v = review_json(instance, id).await?;
+    let doc = v["doc"].as_str().unwrap_or_default().to_string();
+    document(instance, &me.id, &doc, "edit").await?;
+    let s = instance.store.as_ref();
+    let mut tx = s.begin().await?;
+    let changed = tx
+        .execute(
+            "UPDATE docs_reviews SET state = 'cancelled' WHERE id = $1 AND state = 'open'",
+            &[id.into()],
+        )
+        .await?;
+    if changed != 1 {
+        tx.rollback().await?;
+        return Err(ApiError::conflict("This review is over."));
+    }
+    tx.execute("UPDATE docs_review_steps SET state = 'cancelled' WHERE review_id = $1 AND state IN ('waiting', 'current')", &[id.into()]).await?;
+    tx.commit().await?;
+    ortus_core::auth::audit(
+        instance,
+        ortus_core::audit::Event::new("docs.review_cancelled", ortus_core::audit::Outcome::Done)
+            .by(&me.id)
+            .on(&doc)
+            .with(json!({"review": id})),
+    )
+    .await;
+    Ok(ok(&review_json(instance, id).await?))
+}
+
+/// What a review is about: the document as it was sent (the named
+/// version), the text of the version the review before saw, and whether
+/// it was edited since it was sent.
+async fn review_document(
+    request: &Request,
+    params: &PathParams,
+    instance: &Arc<Instance>,
+) -> Result<Response, ApiError> {
+    let me = signed(request, instance).await?;
+    let v = review_json(instance, params.get("review").unwrap_or_default()).await?;
+    let item = document(
+        instance,
+        &me.id,
+        v["doc"].as_str().unwrap_or_default(),
+        "view",
+    )
+    .await?;
+    let s = instance.store.as_ref();
+    let (text, structure) = store::version(s, &item.id, v["version"].as_i64().unwrap_or(0))
+        .await?
+        .unwrap_or_default();
+    let before = match v["previousVersion"].as_i64() {
+        Some(n) => store::version(s, &item.id, n).await?.map(|(t, _)| t),
+        None => None,
+    };
+    let (now_text, _) = store::text(s, &item.id).await?;
+    let doc: Value = serde_json::from_str(&structure).unwrap_or(Value::Null);
+    Ok(ok(&json!({
+        "name": item.name, "label": item.label, "doc": doc,
+        "before": before, "edited": now_text != text,
+    })))
+}
+
 /// Reviews where it is the person's turn, and their own documents out for approval.
 async fn mine(request: &Request, instance: &Arc<Instance>) -> Result<Response, ApiError> {
     let me = signed(request, instance).await?;
@@ -413,6 +500,8 @@ with_params!(h_resolve, resolve);
 with_params!(h_send, send);
 with_params!(h_decide, decide);
 with_params!(h_get_review, get_review);
+with_params!(h_cancel, cancel);
+with_params!(h_review_document, review_document);
 
 fn h_mine(
     request: Request,
@@ -442,5 +531,7 @@ pub fn routes() -> Vec<Route> {
         route(Method::Get, "/docs/reviews/mine", "docsMyReviews", "Reviews where it is one's turn.", h_mine),
         route(Method::Get, "/docs/reviews/:review", "docsReview", "A review with its steps.", h_get_review),
         route(Method::Post, "/docs/reviews/:review/decide", "docsDecide", "The person whose turn it is: {approve, comment}. Sending back needs a comment.", h_decide),
+        route(Method::Post, "/docs/reviews/:review/cancel", "docsReviewCancel", "An editor withdraws a route still open.", h_cancel),
+        route(Method::Get, "/docs/reviews/:review/document", "docsReviewDocument", "The document as it was sent, the text the review before saw, and whether it was edited since.", h_review_document),
     ]
 }

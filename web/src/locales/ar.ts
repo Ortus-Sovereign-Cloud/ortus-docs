@@ -84,6 +84,8 @@ const messages: Record<DocsKey, DocsMessage> = {
   pdf: "PDF",
   importWord: "استيراد ملف Word",
   notWord: "تعذّرت قراءة الملف كمستند Word ‏(.docx).",
+  editedSince: "هذا هو الإصدار {n} كما أُرسل؛ وقد عُدّل المستند بعد ذلك.",
+  withdraw: "سحب",
   now: "الآن",
 };
 

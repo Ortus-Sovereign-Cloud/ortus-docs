@@ -511,3 +511,217 @@ fn two_people_edit_one_document_and_send_it_for_approval() {
         );
     }
 }
+
+/// The slice review's findings: commenters cannot checkpoint; a step is
+/// decided once; a route skips people who left and can be withdrawn;
+/// reviewers see the version that was sent; documents the drive no
+/// longer has are swept away; a reader too far behind is told to reload.
+#[test]
+fn routes_hold_under_races_departures_and_edits() {
+    for (name, base, _keep) in common::installations() {
+        let items = Arc::new(Items::default());
+        let mut apps = ortus_docs::apps();
+        apps.push(Arc::new(FakeDrive(Arc::clone(&items))));
+        let instance = ortus_core::instance::testing_store::instance(Arc::clone(&base.store), apps);
+        for app in instance.apps.clone() {
+            app.provide(&instance, &instance.services);
+        }
+        let client = TestClient::new(ortus_core::app(Arc::clone(&instance)));
+        let marek = signed_in(&instance, "marek@ministry.example", Role::Member);
+        let ana = signed_in(&instance, "ana@ministry.example", Role::Member);
+        let olena = signed_in(&instance, "olena@ministry.example", Role::Member);
+        signed_in(&instance, "sam@ministry.example", Role::Member);
+        let id_of = |e: &str| {
+            ortus_core::runtime::block_on(ortus_core::auth::accounts::by_email(
+                instance.store.as_ref(),
+                e,
+            ))
+            .unwrap()
+            .unwrap()
+            .id
+        };
+        let post = |token: &str, path: &str, v: Value| {
+            call(
+                &client,
+                token,
+                "POST",
+                path,
+                Some(v.to_string().into_bytes()),
+                true,
+            )
+        };
+        let (_, made) = post(&marek, "/docs/documents", json!({"name": "Shelter rota"}));
+        let doc = made["id"].as_str().unwrap().to_string();
+        items.0.lock().unwrap().get_mut(&doc).unwrap().2.extend([
+            (id_of("ana@ministry.example"), "comment".to_string()),
+            (id_of("olena@ministry.example"), "view".to_string()),
+        ]);
+        let first = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Rota as sent."}]}]});
+        call(
+            &client,
+            &marek,
+            "POST",
+            &format!("/docs/documents/{doc}/updates?client=m"),
+            Some(b"u1".to_vec()),
+            false,
+        );
+        // A commenter may send updates, not checkpoints.
+        let (status, _) = post(
+            &ana,
+            &format!("/docs/documents/{doc}/checkpoint"),
+            json!({"seq": 1, "state": B64.encode(b"x"), "doc": first}),
+        );
+        assert_eq!(403, status, "{name}");
+        let (status, _) = post(
+            &marek,
+            &format!("/docs/documents/{doc}/checkpoint"),
+            json!({"seq": 1, "state": B64.encode(b"s1"), "doc": first}),
+        );
+        assert_eq!(200, status, "{name}");
+
+        // Olena, then Ana; Olena's second click finds her step decided.
+        let (status, review) = post(
+            &marek,
+            &format!("/docs/documents/{doc}/reviews"),
+            json!({"steps": [{"email": "olena@ministry.example"}, {"email": "ana@ministry.example"}]}),
+        );
+        assert_eq!(200, status, "{name}: {review}");
+        let r = review["id"].as_str().unwrap().to_string();
+        // Edited after sending: the reviewer still sees what was sent.
+        call(
+            &client,
+            &marek,
+            "POST",
+            &format!("/docs/documents/{doc}/updates?client=m"),
+            Some(b"u2".to_vec()),
+            false,
+        );
+        let later = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Rota changed later."}]}]});
+        post(
+            &marek,
+            &format!("/docs/documents/{doc}/checkpoint"),
+            json!({"seq": 2, "state": B64.encode(b"s2"), "doc": later}),
+        );
+        let (_, sent) = call(
+            &client,
+            &olena,
+            "GET",
+            &format!("/docs/reviews/{r}/document"),
+            None,
+            false,
+        );
+        assert_eq!(
+            (json!(first), json!(true)),
+            (sent["doc"].clone(), sent["edited"].clone()),
+            "{name}: {sent}"
+        );
+        assert_eq!(
+            200,
+            post(
+                &olena,
+                &format!("/docs/reviews/{r}/decide"),
+                json!({"approve": true})
+            )
+            .0,
+            "{name}"
+        );
+        assert_eq!(
+            403,
+            post(
+                &olena,
+                &format!("/docs/reviews/{r}/decide"),
+                json!({"approve": true})
+            )
+            .0,
+            "{name}"
+        );
+
+        // Ana leaves while it is her turn: nobody is left, so it is approved.
+        let ana_id = id_of("ana@ministry.example");
+        ortus_core::runtime::block_on(async {
+            let mut tx = instance.store.begin().await.unwrap();
+            for app in instance.apps.iter() {
+                app.forget_user(
+                    tx.as_mut(),
+                    &ana_id,
+                    &ortus_core::retention::Rules::default(),
+                )
+                .await
+                .unwrap();
+            }
+            tx.commit().await.unwrap();
+        });
+        let (_, after) = call(
+            &client,
+            &marek,
+            "GET",
+            &format!("/docs/reviews/{r}"),
+            None,
+            false,
+        );
+        assert_eq!(json!("approved"), after["state"], "{name}: {after}");
+        assert_eq!(
+            json!("skipped"),
+            after["steps"][1]["state"],
+            "{name}: {after}"
+        );
+
+        // A new route is withdrawn; its reviewer can no longer decide.
+        let (_, again) = post(
+            &marek,
+            &format!("/docs/documents/{doc}/reviews"),
+            json!({"steps": [{"email": "olena@ministry.example"}]}),
+        );
+        let r2 = again["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            403,
+            post(&olena, &format!("/docs/reviews/{r2}/cancel"), json!({})).0,
+            "{name}"
+        );
+        let (status, gone) = post(&marek, &format!("/docs/reviews/{r2}/cancel"), json!({}));
+        assert_eq!(
+            (200, json!("cancelled")),
+            (status, gone["state"].clone()),
+            "{name}: {gone}"
+        );
+        assert_ne!(
+            200,
+            post(
+                &olena,
+                &format!("/docs/reviews/{r2}/decide"),
+                json!({"approve": true})
+            )
+            .0,
+            "{name}"
+        );
+        // Strangers' addresses and people without access read alike.
+        let (_, nobody) = post(
+            &marek,
+            &format!("/docs/documents/{doc}/reviews"),
+            json!({"steps": [{"email": "nobody@ministry.example"}]}),
+        );
+        let (_, outsider) = post(
+            &marek,
+            &format!("/docs/documents/{doc}/reviews"),
+            json!({"steps": [{"email": "sam@ministry.example"}]}),
+        );
+        assert!(
+            nobody.to_string().contains("cannot open"),
+            "{name}: {nobody}"
+        );
+        assert!(
+            outsider.to_string().contains("cannot open"),
+            "{name}: {outsider}"
+        );
+
+        // The drive deletes it for good: the sweep forgets what docs kept.
+        items.0.lock().unwrap().remove(&doc);
+        ortus_core::runtime::block_on(ortus_docs::sweep(&instance)).unwrap();
+        let left = ortus_core::runtime::block_on(instance.store.query(
+            "SELECT COUNT(*) FROM docs_snapshots WHERE doc_id = $1",
+            &[doc.as_str().into()],
+        ))
+        .unwrap();
+        assert_eq!(Some(0), left[0].int(0), "{name}");
+    }
+}

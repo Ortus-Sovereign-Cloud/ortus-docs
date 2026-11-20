@@ -84,6 +84,8 @@ const messages: Record<DocsKey, DocsMessage> = {
   pdf: "PDF",
   importWord: "Word-Datei importieren",
   notWord: "Die Datei konnte nicht als Word-Dokument (.docx) gelesen werden.",
+  editedSince: "Das ist Version {n}, wie sie gesendet wurde; das Dokument wurde seitdem bearbeitet.",
+  withdraw: "Zurückziehen",
   now: "jetzt",
 };
 

@@ -26,6 +26,14 @@ test("a new document is written and saved", async ({ page }) => {
   await expect(editor(page).getByText(en.saved)).toBeVisible();
 });
 
+test("a broken update from someone does not stop the document opening", async ({ page }) => {
+  const id = new URL(address).searchParams.get("doc");
+  const r = await page.request.post(`/api/v1/docs/documents/${id}/updates?client=bad`, { headers: { "X-Requested-With": "ortus", "Content-Type": "application/octet-stream" }, data: Buffer.from([1, 2, 3]) });
+  expect(r.ok()).toBeTruthy();
+  await page.goto(address);
+  await expect(editor(page).locator(".ProseMirror")).toContainText("sports hall");
+});
+
 test("a change made elsewhere arrives live; a suggestion is accepted", async ({ page, browser }) => {
   await page.goto(address);
   await expect(editor(page).locator(".ProseMirror")).toContainText("sports hall");

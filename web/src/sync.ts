@@ -7,6 +7,16 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from "y-protoc
 
 const REMOTE = "remote";
 
+/** Applies an update; a broken one (from a faulty or hostile client) is skipped. */
+function apply(doc: Y.Doc, update: Uint8Array): boolean {
+  try {
+    Y.applyUpdate(doc, update, REMOTE);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function b64(bytes: Uint8Array): string {
   let s = "";
   for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -61,14 +71,13 @@ export class Sync {
     readonly id: string,
     private readonly canWrite: boolean,
     private readonly structure: () => unknown,
+    /** Only editors fold updates into checkpoints. */
+    private readonly canCheckpoint = false,
   ) {}
 
   /** Starts from what the server has, then listens. */
   start(opened: Opened): void {
-    if (opened.base) Y.applyUpdate(this.doc, unb64(opened.base), REMOTE);
-    for (const u of opened.updates) Y.applyUpdate(this.doc, unb64(u), REMOTE);
-    this.seq = opened.seq;
-    this.sinceCheckpoint = opened.updates.length;
+    this.take(opened);
     this.doc.on("update", (update: Uint8Array, origin: unknown) => {
       if (origin === REMOTE || !this.canWrite) return;
       this.queue.push(update);
@@ -84,29 +93,69 @@ export class Sync {
     this.checkpointTimer = window.setInterval(() => void this.checkpoint(), 30_000);
   }
 
+  /** A document's state from the server, merged in (merging twice is harmless). */
+  private take(opened: Pick<Opened, "base" | "updates" | "seq">): void {
+    if (opened.base) apply(this.doc, unb64(opened.base));
+    for (const u of opened.updates) apply(this.doc, unb64(u));
+    this.seq = opened.seq;
+    this.sinceCheckpoint = opened.updates.length;
+  }
+
+  /** Behind the server (a gap, or updates folded away): fetch the state again. */
+  private async resync(): Promise<void> {
+    this.events?.close();
+    try {
+      const r = await fetch(`/api/v1/docs/documents/${encodeURIComponent(this.id)}`, { headers: { "X-Requested-With": "ortus" } });
+      if (r.status === 404 || r.status === 403) {
+        this.onGone();
+        return;
+      }
+      if (r.ok) this.take((await r.json()) as Opened);
+    } catch {
+      /* tried again below */
+    }
+    window.setTimeout(() => this.listen(), 500);
+  }
+
   private listen(): void {
     if (this.closed) return;
     this.events = new EventSource(`/api/v1/docs/documents/${encodeURIComponent(this.id)}/events?since=${this.seq}`);
     this.events.addEventListener("update", (e) => {
       const m = JSON.parse((e as MessageEvent).data) as { seq: number; data: string; client: string };
-      this.seq = Math.max(this.seq, m.seq);
+      if (m.seq <= this.seq) return;
+      // Every number in turn: a gap means something was missed.
+      if (m.seq !== this.seq + 1) {
+        void this.resync();
+        return;
+      }
+      this.seq = m.seq;
       this.sinceCheckpoint++;
-      if (m.client !== this.client) Y.applyUpdate(this.doc, unb64(m.data), REMOTE);
+      if (m.client !== this.client) apply(this.doc, unb64(m.data));
     });
     this.events.addEventListener("presence", (e) => {
       const list = JSON.parse((e as MessageEvent).data) as (Here & { state: string })[];
       for (const p of list) {
         if (p.client !== this.client) {
+          // The name shown at a cursor is the account's, not what the
+          // other editor claims.
+          const touched: number[] = [];
+          const note = ({ added, updated }: { added: number[]; updated: number[] }) => touched.push(...added, ...updated);
+          this.awareness.on("update", note);
           try {
             applyAwarenessUpdate(this.awareness, unb64(p.state), REMOTE);
           } catch {
             /* a broken state is ignored */
           }
+          this.awareness.off("update", note);
+          for (const id of touched) {
+            const st = this.awareness.getStates().get(id) as { user?: { name?: string; color?: string } } | undefined;
+            if (st?.user) st.user = { ...st.user, name: p.name ?? "" };
+          }
         }
       }
       this.onPeople(list.map(({ client, user, name }) => ({ client, user, name })));
     });
-    this.events.addEventListener("reload", () => this.onGone());
+    this.events.addEventListener("reload", () => void this.resync());
     // The server ends a stream after a while: come back from where we were.
     this.events.onerror = () => {
       this.events?.close();
@@ -120,10 +169,12 @@ export class Sync {
     this.onSaved(false);
     const update = Y.mergeUpdates(this.queue.splice(0));
     this.pending++;
+    let full = false;
     try {
       const r = await fetch(`/api/v1/docs/documents/${encodeURIComponent(this.id)}/updates?client=${this.client}`, { method: "POST", headers: { "X-Requested-With": "ortus", "Content-Type": "application/octet-stream" }, body: new Blob([update as BlobPart]) });
       if (r.status === 409) {
-        await this.checkpoint();
+        // Too many loose updates: an editor checkpoints, then we try again.
+        full = true;
         this.queue.unshift(update);
       } else if (!r.ok) {
         this.queue.unshift(update);
@@ -136,6 +187,10 @@ export class Sync {
       this.pending--;
       this.sending = false;
     }
+    if (full) {
+      await this.checkpoint(true);
+      await new Promise((done) => window.setTimeout(done, 1500));
+    }
     if (this.queue.length) void this.flush();
     else this.onSaved(true);
   }
@@ -147,8 +202,8 @@ export class Sync {
   }
 
   /** The whole document up to what has been seen, with its structure. */
-  async checkpoint(): Promise<void> {
-    if (!this.canWrite || this.sending || this.queue.length || this.sinceCheckpoint === 0 || this.seq === 0) return;
+  async checkpoint(evenWithQueue = false): Promise<void> {
+    if (!this.canCheckpoint || this.sending || (this.queue.length && !evenWithQueue) || this.sinceCheckpoint === 0 || this.seq === 0) return;
     const seq = this.seq;
     const r = await fetch(`/api/v1/docs/documents/${encodeURIComponent(this.id)}/checkpoint`, {
       method: "POST",

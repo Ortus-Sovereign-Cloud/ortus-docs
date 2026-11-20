@@ -124,6 +124,12 @@ export class OrtusDocsReview extends LitElement {
         text-align: start;
         font-weight: 400;
       }
+      .edited {
+        margin-block: -24px 24px;
+        font-family: var(--ortus-font);
+        font-size: 13px;
+        color: #8a5a00;
+      }
       .changed {
         background: #d9f5e6;
       }
@@ -235,6 +241,7 @@ export class OrtusDocsReview extends LitElement {
   @state() private name = "";
   @state() private label: string | null = null;
   @state() private earlier: string[] = [];
+  @state() private edited = false;
   @state() private me = "";
   @state() private error = "";
   @state() private busy = false;
@@ -250,11 +257,13 @@ export class OrtusDocsReview extends LitElement {
       const [review, who] = await Promise.all([call<Review>("GET", `/docs/reviews/${encodeURIComponent(id)}`), call<{ id: string }>("GET", "/me")]);
       this.review = review;
       this.me = who.id;
-      const changes = await call<{ before: string; now: string; doc: PMNode | null; name: string; label: string | null }>("GET", `/docs/documents/${encodeURIComponent(review.doc)}/changes?since=${review.previousVersion ?? 0}`);
-      this.doc = changes.doc;
-      this.name = changes.name;
-      this.label = changes.label;
-      this.earlier = review.previousVersion ? changes.before.split("\n").map((l) => l.trim()) : [];
+      // The document as it was sent, not as it is now.
+      const sent = await call<{ before: string | null; doc: PMNode | null; name: string; label: string | null; edited: boolean }>("GET", `/docs/reviews/${encodeURIComponent(review.id)}/document`);
+      this.doc = sent.doc;
+      this.name = sent.name;
+      this.label = sent.label;
+      this.edited = sent.edited;
+      this.earlier = review.previousVersion && sent.before !== null ? sent.before.split("\n").map((l) => l.trim()) : [];
     } catch (e) {
       this.error = e instanceof ApiError ? e.message : String(e);
     }
@@ -328,6 +337,7 @@ export class OrtusDocsReview extends LitElement {
       </header>
       <div class="body">
         <article class="page" aria-label=${this.name}>
+          ${this.edited ? html`<p class="edited" role="note">${t(this.localize, "editedSince", { n: r.version })}</p>` : nothing}
           ${(this.doc?.content ?? []).map((b) => this.block(b))}
           ${changed.length ? html`<footer>${t(this.localize, "markedChanged", { count: changed.length })}</footer>` : nothing}
         </article>

@@ -22,6 +22,10 @@ pub const DOC_MIME: &str = "application/vnd.ortus.doc";
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+fn bytes_len(request: &Request) -> i64 {
+    request.body.as_bytes().len() as i64
+}
+
 pub(crate) fn query(request: &Request, name: &str) -> Option<String> {
     let q = request.request_uri.split_once('?')?.1;
     q.split('&').find_map(|p| {
@@ -113,6 +117,18 @@ async fn create(request: &Request, instance: &Arc<Instance>) -> Result<Response,
             code: "drive",
             message: e,
         })?;
+    // Kept to find documents the drive no longer has (the sweep).
+    instance
+        .store
+        .execute(
+            "INSERT INTO docs_documents (doc_id, owner_id, created_at) VALUES ($1, $2, $3)",
+            &[
+                made.id.as_str().into(),
+                me.id.as_str().into(),
+                store::now().into(),
+            ],
+        )
+        .await?;
     Ok(ok(&json!({ "id": made.id, "path": made.path })))
 }
 
@@ -205,16 +221,8 @@ async fn update(
         .take(40)
         .collect();
     let s = instance.store.as_ref();
-    let loose = s
-        .query(
-            "SELECT COUNT(*) FROM docs_updates WHERE doc_id = $1",
-            &[item.id.as_str().into()],
-        )
-        .await?
-        .first()
-        .and_then(|r| r.int(0))
-        .unwrap_or(0);
-    if loose >= store::MAX_LOOSE {
+    let (loose, held) = store::loose(s, &item.id).await?;
+    if loose >= store::MAX_LOOSE || held + bytes_len(request) > store::MAX_LOOSE_BYTES {
         return Err(ApiError {
             status: 409,
             code: "checkpoint",
@@ -273,8 +281,43 @@ async fn presence(
     Ok(ok(&json!({})))
 }
 
+/// Event streams open per person (all documents), at most.
+const MAX_STREAMS: usize = 20;
+
+static STREAMS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// One open stream of a person; counted while it lives.
+struct Open(String);
+
+impl Open {
+    fn take(user: &str) -> Option<Open> {
+        let mut all = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
+        let n = all.entry(user.to_string()).or_insert(0);
+        if *n >= MAX_STREAMS {
+            return None;
+        }
+        *n += 1;
+        Some(Open(user.to_string()))
+    }
+}
+
+impl Drop for Open {
+    fn drop(&mut self) {
+        let mut all = STREAMS.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(n) = all.get_mut(&self.0) {
+            *n = n.saturating_sub(1);
+            if *n == 0 {
+                all.remove(&self.0);
+            }
+        }
+    }
+}
+
 /// Changes as they happen: `update` events (seq, data, client) after
-/// ?since=, and `presence` events with who is here.
+/// ?since=, and `presence` events with who is here. A client that is
+/// behind the kept checkpoint (its updates were folded in) gets `reload`
+/// and starts again from the document's state.
 fn events(
     request: &Request,
     params: &PathParams,
@@ -285,14 +328,26 @@ fn events(
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let doc = params.get("doc").unwrap_or_default().to_string();
+    let Some(open) = Open::take(&user) else {
+        return answer(
+            request,
+            Err::<Response, _>(ApiError {
+                status: 429,
+                code: "streams",
+                message: "Too many open documents.".into(),
+            }),
+        );
+    };
     let (events, response) = rust_web_server::sse::SseStream::new()
         .keep_alive(Duration::from_secs(15))
         .start();
     ortus_core::runtime::io().spawn(async move {
+        let _open = open;
         let mut seq = since;
         let mut seen_presence = String::new();
         let started = store::now();
         let mut checked = started;
+        let mut pinged = started;
         loop {
             let s = instance.store.as_ref();
             // Access is looked at again every minute.
@@ -302,21 +357,33 @@ fn events(
                     return;
                 }
             }
+            // A gone client is noticed within seconds.
+            if store::now() - pinged > 2_000 {
+                pinged = store::now();
+                if events.comment("").is_err() {
+                    return;
+                }
+            }
+            match store::kept_seq(s, &doc).await {
+                Ok(kept) if kept > seq => {
+                    let _ = events.send_async(rust_web_server::sse::SseEvent::data(json!({"seq": kept}).to_string()).event_type("reload")).await;
+                    return;
+                }
+                Ok(_) => {}
+                Err(_) => return,
+            }
             match store::updates_since(s, &doc, seq).await {
                 Ok(list) => {
                     for (n, data, client) in list {
-                        seq = n;
                         let event = rust_web_server::sse::SseEvent::data(json!({"seq": n, "data": B64.encode(&data), "client": client}).to_string()).event_type("update");
-                        if events.try_send(event).is_err() {
+                        // Waits for room: nothing is dropped.
+                        if events.send_async(event).await.is_err() {
                             return;
                         }
+                        seq = n;
                     }
                 }
-                Err(_) => {
-                    // The updates were compacted away: the client starts over.
-                    let _ = events.try_send(rust_web_server::sse::SseEvent::data("{}".to_string()).event_type("reload"));
-                    return;
-                }
+                Err(_) => return,
             }
             if let Ok(here) = store::presence(s, &doc).await {
                 let ids: Vec<String> = here.iter().map(|h| h.1.clone()).collect();
@@ -325,7 +392,7 @@ fn events(
                 let text = json!(list).to_string();
                 if text != seen_presence {
                     seen_presence = text.clone();
-                    if events.try_send(rust_web_server::sse::SseEvent::data(text).event_type("presence")).is_err() {
+                    if events.send_async(rust_web_server::sse::SseEvent::data(text).event_type("presence")).await.is_err() {
                         return;
                     }
                 }
@@ -467,7 +534,7 @@ async fn checkpoint(
         instance,
         &me.id,
         params.get("doc").unwrap_or_default(),
-        "comment",
+        "edit",
     )
     .await?;
     let input: Checkpoint = body(request)?;

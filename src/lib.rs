@@ -45,6 +45,34 @@ pub async fn index(instance: &Instance, doc: &str, someone: &str, text: &str) {
     let _ = ortus_core::search::index(instance.store.as_ref(), &entry).await;
 }
 
+/// Hourly: documents the drive no longer has (deleted for good, or their
+/// owner's account gone) are forgotten with all they kept.
+pub const SWEEP_JOB: &str = "docs.sweep";
+
+pub async fn sweep(instance: &Instance) -> Result<(), String> {
+    let Ok(drive) = instance
+        .services
+        .get::<dyn ortus_core::interfaces::Drive>(&instance.switches)
+        .await
+    else {
+        return Ok(());
+    };
+    let s = instance.store.as_ref();
+    for (doc, owner) in store::documents(s).await.map_err(|e| e.to_string())? {
+        if let Ok(None) = drive.describe(&owner, &doc).await {
+            let mut tx = s.begin().await.map_err(|e| e.to_string())?;
+            store::forget_document(tx.as_mut(), &doc)
+                .await
+                .map_err(|e| e.to_string())?;
+            ortus_core::search::remove_in(tx.as_mut(), s.engine(), "docs", &doc)
+                .await
+                .map_err(|e| e.to_string())?;
+            tx.commit().await.map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
 impl App for Docs {
     fn info(&self) -> AppInfo {
         AppInfo {
@@ -110,6 +138,21 @@ impl App for Docs {
         _rules: &'a ortus_core::retention::Rules,
     ) -> BoxFuture<'a, Result<(), String>> {
         Box::pin(async move { store::forget(tx, user_id).await.map_err(|e| e.to_string()) })
+    }
+
+    fn periodic(&self) -> Vec<(&'static str, i64)> {
+        vec![(SWEEP_JOB, 60 * 60 * 1000)]
+    }
+
+    fn outside_jobs(&self, instance: &Arc<Instance>) -> Vec<ortus_core::app::OutsideJobKind> {
+        let instance = Arc::clone(instance);
+        vec![ortus_core::app::OutsideJobKind {
+            kind: SWEEP_JOB.into(),
+            handler: Box::new(move |_| {
+                let instance = Arc::clone(&instance);
+                Box::pin(async move { sweep(&instance).await })
+            }),
+        }]
     }
 
     fn web_file(&self, path: &str) -> Option<std::borrow::Cow<'static, [u8]>> {

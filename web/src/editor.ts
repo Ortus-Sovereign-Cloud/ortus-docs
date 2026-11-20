@@ -403,7 +403,7 @@ export class OrtusDocsEditor extends LitElement {
 
   private mount(opened: Opened): void {
     const writer = opened.role !== "view";
-    const sync = new Sync(opened.id, writer, () => this.view?.state.doc.toJSON());
+    const sync = new Sync(opened.id, writer, () => this.view?.state.doc.toJSON(), this.canEdit());
     this.sync = sync;
     sync.onPeople = (list) => (this.people = list);
     sync.onSaved = (saved) => (this.saved = saved);
@@ -569,6 +569,18 @@ export class OrtusDocsEditor extends LitElement {
     }
   }
 
+  private async withdraw(): Promise<void> {
+    const review = this.opened?.review as { id: string } | null | undefined;
+    if (!review) return;
+    try {
+      await call("POST", `/docs/reviews/${encodeURIComponent(review.id)}/cancel`);
+      const opened = await call<Opened>("GET", `/docs/documents/${encodeURIComponent(this.docId())}`);
+      if (this.opened) this.opened = { ...this.opened, review: opened.review };
+    } catch (err) {
+      this.error = err instanceof ApiError ? err.message : String(err);
+    }
+  }
+
   private isActive(mark: "strong" | "em"): boolean {
     const st = this.view?.state;
     if (!st) return false;
@@ -605,6 +617,7 @@ export class OrtusDocsEditor extends LitElement {
           ${allowed.map(([m, key]) => html`<option value=${m} ?selected=${m === this.mode}>${t(this.localize, key)}</option>`)}
         </select>
         ${this.canEdit() && review?.state !== "open" ? html`<button class="button" @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.showModal()}>${t(this.localize, "sendForApproval")}</button>` : nothing}
+        ${this.canEdit() && review?.state === "open" ? html`<button class="button" @click=${this.withdraw}>${t(this.localize, "withdraw")}</button>` : nothing}
         <button class="button primary" @click=${() => location.assign(`/drive?file=${encodeURIComponent(o.id)}&share=1`)}>${t(this.localize, "share")}</button>
       </header>
       <div class="tools" role="toolbar" aria-label=${t(this.localize, "format")}>
