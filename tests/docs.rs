@@ -725,3 +725,266 @@ fn routes_hold_under_races_departures_and_edits() {
         assert_eq!(Some(0), left[0].int(0), "{name}");
     }
 }
+
+/// Signs by appending a marker (the real signing is the approvals app's).
+#[derive(Default)]
+struct FakeSigning;
+
+impl ortus_core::interfaces::Signing for FakeSigning {
+    fn sign<'a>(
+        &'a self,
+        user: &'a str,
+        pdf: &'a [u8],
+        reason: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, String>> {
+        let mut out = pdf.to_vec();
+        out.extend_from_slice(format!("\n%signed-by {user} ({reason})\n").as_bytes());
+        Box::pin(async move { Ok(out) })
+    }
+    fn verify<'a>(
+        &'a self,
+        _: &'a [u8],
+    ) -> BoxFuture<'a, Result<Vec<ortus_core::interfaces::SignatureCheck>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+/// A filed record: title, case, PDF, readers.
+type Filed = (String, Option<String>, Vec<u8>, Vec<String>);
+
+#[derive(Default)]
+struct FakeRecords(Mutex<Vec<Filed>>);
+
+impl ortus_core::interfaces::Records for FakeRecords {
+    fn file<'a>(
+        &'a self,
+        r: ortus_core::interfaces::NewRecord<'a>,
+    ) -> BoxFuture<'a, Result<ItemRef, String>> {
+        self.0.lock().unwrap().push((
+            r.title.to_string(),
+            r.case.map(str::to_string),
+            r.pdf.to_vec(),
+            r.readers.to_vec(),
+        ));
+        Box::pin(async {
+            Ok(ItemRef {
+                app: "records".into(),
+                id: "r1".into(),
+                path: "/records?record=r1".into(),
+            })
+        })
+    }
+}
+
+struct FakeApprovals(Arc<FakeSigning>, Arc<FakeRecords>);
+
+impl App for FakeApprovals {
+    fn info(&self) -> AppInfo {
+        AppInfo {
+            id: "approvals",
+            group: Group::Create,
+            path: "/approvals",
+            order: 3,
+        }
+    }
+    fn provide(&self, _: &Arc<Instance>, services: &ortus_core::services::Services) {
+        let signing: Arc<dyn ortus_core::interfaces::Signing> = self.0.clone();
+        services.provide("approvals", signing);
+        let records: Arc<dyn ortus_core::interfaces::Records> = self.1.clone();
+        services.provide("approvals", records);
+    }
+}
+
+/// A route that signs: a PDF of the version sent, each signer adds their
+/// signature (after confirming who they are when their sign-in is old),
+/// an approver only approves, and at the end the signed PDF is filed to
+/// the case with the route's people as its readers.
+#[test]
+fn a_route_signs_the_pdf_and_files_it_to_the_case() {
+    for (name, base, _keep) in common::installations() {
+        let items = Arc::new(Items::default());
+        let records = Arc::new(FakeRecords::default());
+        let mut apps = ortus_docs::apps();
+        apps.push(Arc::new(FakeDrive(Arc::clone(&items))));
+        apps.push(Arc::new(FakeApprovals(
+            Arc::new(FakeSigning),
+            Arc::clone(&records),
+        )));
+        let instance = ortus_core::instance::testing_store::instance(Arc::clone(&base.store), apps);
+        for app in instance.apps.clone() {
+            app.provide(&instance, &instance.services);
+        }
+        let client = TestClient::new(ortus_core::app(Arc::clone(&instance)));
+        let marek = signed_in(&instance, "marek@ministry.example", Role::Member);
+        let olena = signed_in(&instance, "olena@ministry.example", Role::Member);
+        let kasia = signed_in(&instance, "katarzyna@ministry.example", Role::Member);
+        let id_of = |e: &str| {
+            ortus_core::runtime::block_on(ortus_core::auth::accounts::by_email(
+                instance.store.as_ref(),
+                e,
+            ))
+            .unwrap()
+            .unwrap()
+            .id
+        };
+        let post = |token: &str, path: &str, v: Value| {
+            call(
+                &client,
+                token,
+                "POST",
+                path,
+                Some(v.to_string().into_bytes()),
+                true,
+            )
+        };
+        let (_, made) = post(
+            &marek,
+            "/docs/documents",
+            json!({"name": "Flood response plan 2026"}),
+        );
+        let doc = made["id"].as_str().unwrap().to_string();
+        items.0.lock().unwrap().get_mut(&doc).unwrap().2.extend([
+            (id_of("olena@ministry.example"), "view".to_string()),
+            (id_of("katarzyna@ministry.example"), "view".to_string()),
+        ]);
+        call(
+            &client,
+            &marek,
+            "POST",
+            &format!("/docs/documents/{doc}/updates?client=m"),
+            Some(b"u1".to_vec()),
+            false,
+        );
+        let structure = json!({"type": "doc", "content": [{"type": "heading", "attrs": {"level": 1}, "content": [{"type": "text", "text": "Flood response plan 2026"}]}, {"type": "paragraph", "content": [{"type": "text", "text": "Approved for use by all districts."}]}]});
+        post(
+            &marek,
+            &format!("/docs/documents/{doc}/checkpoint"),
+            json!({"seq": 1, "state": B64.encode(b"s1"), "doc": structure}),
+        );
+        assert_eq!(
+            400,
+            post(
+                &marek,
+                &format!("/docs/documents/{doc}/reviews"),
+                json!({"steps": [{"email": "olena@ministry.example", "kind": "veto"}]})
+            )
+            .0,
+            "{name}"
+        );
+        let (status, route) = post(
+            &marek,
+            &format!("/docs/documents/{doc}/reviews"),
+            json!({"case": "2026/EM/0114", "steps": [
+                {"email": "marek@ministry.example", "title": "Author signs", "kind": "sign"},
+                {"email": "olena@ministry.example", "title": "Logistics review"},
+                {"email": "katarzyna@ministry.example", "title": "Director signs", "kind": "sign"},
+            ]}),
+        );
+        assert_eq!(200, status, "{name}: {route}");
+        let r = route["id"].as_str().unwrap().to_string();
+        assert_eq!(
+            (json!("2026/EM/0114"), json!(true), json!("sign")),
+            (
+                route["case"].clone(),
+                route["signed"].clone(),
+                route["steps"][0]["kind"].clone()
+            ),
+            "{name}: {route}"
+        );
+        let pdf = client
+            .get(&format!("/api/v1/docs/reviews/{r}/pdf"))
+            .header("Authorization", &format!("Bearer {olena}"))
+            .send();
+        assert_eq!(200, pdf.status(), "{name}");
+        assert!(pdf.body_bytes().starts_with(b"%PDF-"), "{name}");
+
+        // Marek signs (a fresh sign-in).
+        let (status, after) = post(
+            &marek,
+            &format!("/docs/reviews/{r}/decide"),
+            json!({"approve": true}),
+        );
+        assert_eq!(
+            (200, json!("signed")),
+            (status, after["steps"][0]["state"].clone()),
+            "{name}: {after}"
+        );
+        assert_eq!(
+            200,
+            post(
+                &olena,
+                &format!("/docs/reviews/{r}/decide"),
+                json!({"approve": true})
+            )
+            .0,
+            "{name}"
+        );
+        // Katarzyna's sign-in is an hour old: she confirms first.
+        ortus_core::runtime::block_on(instance.store.execute(
+            "UPDATE core_sessions SET created_at = created_at - 3600000 WHERE user_id = $1",
+            &[id_of("katarzyna@ministry.example").as_str().into()],
+        ))
+        .unwrap();
+        let (status, confirm) = post(
+            &kasia,
+            &format!("/docs/reviews/{r}/decide"),
+            json!({"approve": true}),
+        );
+        assert_eq!(
+            (403, json!("confirm")),
+            (status, confirm["error"]["code"].clone()),
+            "{name}: {confirm}"
+        );
+        let (status, _) = post(
+            &kasia,
+            &format!("/docs/reviews/{r}/decide"),
+            json!({"approve": true, "password": "wrong"}),
+        );
+        assert_eq!(403, status, "{name}");
+        ortus_core::runtime::block_on(ortus_core::auth::credentials::set_password(
+            instance.store.as_ref(),
+            &id_of("katarzyna@ministry.example"),
+            "correct horse battery",
+            ortus_core::program::now_ms(),
+        ))
+        .unwrap();
+        let (status, done) = post(
+            &kasia,
+            &format!("/docs/reviews/{r}/decide"),
+            json!({"approve": true, "password": "correct horse battery"}),
+        );
+        assert_eq!(
+            (200, json!("approved"), json!("/records?record=r1")),
+            (status, done["state"].clone(), done["record"].clone()),
+            "{name}: {done}"
+        );
+
+        // Filed once, to the case, signed by both, readable by the route's people.
+        let filed = records.0.lock().unwrap().clone();
+        assert_eq!(1, filed.len(), "{name}");
+        let (title, case, bytes, readers) = &filed[0];
+        assert_eq!(
+            ("Flood response plan 2026", Some("2026/EM/0114")),
+            (title.as_str(), case.as_deref()),
+            "{name}"
+        );
+        let text = String::from_utf8_lossy(bytes);
+        assert!(
+            text.contains(&format!(
+                "signed-by {} (Author signs)",
+                id_of("marek@ministry.example")
+            )) && text.contains("(Director signs)"),
+            "{name}"
+        );
+        for who in [
+            "marek@ministry.example",
+            "olena@ministry.example",
+            "katarzyna@ministry.example",
+        ] {
+            assert!(readers.contains(&id_of(who)), "{name}: {who}");
+        }
+        // The sweep does not file it again.
+        ortus_core::runtime::block_on(ortus_docs::sweep(&instance)).unwrap();
+        assert_eq!(1, records.0.lock().unwrap().len(), "{name}");
+    }
+}

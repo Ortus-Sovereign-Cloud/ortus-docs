@@ -297,7 +297,7 @@ export class OrtusDocsEditor extends LitElement {
         box-sizing: border-box;
       }
       dialog {
-        inline-size: min(520px, 94vw);
+        inline-size: min(720px, 94vw);
         padding: 0;
         border-radius: 22px;
         border: 1px solid var(--ortus-line-strong);
@@ -328,7 +328,7 @@ export class OrtusDocsEditor extends LitElement {
       }
       .step {
         display: grid;
-        grid-template-columns: 1fr 1fr 150px;
+        grid-template-columns: 1fr 1fr 150px 110px;
         gap: 8px;
       }
       textarea {
@@ -351,7 +351,8 @@ export class OrtusDocsEditor extends LitElement {
   @state() private comments: Comment[] = [];
   @state() private error = "";
   @state() private draftComment: { quote: string; from: number; to: number } | null = null;
-  @state() private steps: { email: string; title: string; due: string }[] = [{ email: "", title: "", due: "" }];
+  @state() private steps: { email: string; title: string; due: string; kind: "approve" | "sign" }[] = [{ email: "", title: "", due: "", kind: "approve" }];
+  @state() private caseRef = "";
   @query(".page") private page!: HTMLElement;
   private view: EditorView | null = null;
   private sync: Sync | null = null;
@@ -559,8 +560,8 @@ export class OrtusDocsEditor extends LitElement {
     e.preventDefault();
     try {
       await this.sync?.settle();
-      const steps = this.steps.filter((s) => s.email.trim()).map((s) => ({ email: s.email.trim(), title: s.title.trim(), dueAt: s.due ? Date.parse(s.due) : undefined }));
-      await call("POST", `/docs/documents/${encodeURIComponent(this.docId())}/reviews`, { steps });
+      const steps = this.steps.filter((s) => s.email.trim()).map((s) => ({ email: s.email.trim(), title: s.title.trim(), dueAt: s.due ? Date.parse(s.due) : undefined, kind: s.kind }));
+      await call("POST", `/docs/documents/${encodeURIComponent(this.docId())}/reviews`, { steps, case: this.caseRef.trim() || undefined });
       this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.close();
       const opened = await call<Opened>("GET", `/docs/documents/${encodeURIComponent(this.docId())}`);
       if (this.opened) this.opened = { ...this.opened, review: opened.review };
@@ -682,10 +683,15 @@ export class OrtusDocsEditor extends LitElement {
                 <input class="input" type="email" placeholder=${t(this.localize, "reviewer")} aria-label=${t(this.localize, "reviewerN", { n: i + 1 })} .value=${s.email} @input=${(e: Event) => (this.steps = this.steps.map((x, j) => (j === i ? { ...x, email: (e.target as HTMLInputElement).value } : x)))} />
                 <input class="input" placeholder=${t(this.localize, "stepTitle")} aria-label=${t(this.localize, "stepTitleN", { n: i + 1 })} .value=${s.title} @input=${(e: Event) => (this.steps = this.steps.map((x, j) => (j === i ? { ...x, title: (e.target as HTMLInputElement).value } : x)))} />
                 <input class="input" type="datetime-local" aria-label=${t(this.localize, "dueN", { n: i + 1 })} .value=${s.due} @input=${(e: Event) => (this.steps = this.steps.map((x, j) => (j === i ? { ...x, due: (e.target as HTMLInputElement).value } : x)))} />
+                <select class="input" aria-label=${t(this.localize, "kindN", { n: i + 1 })} .value=${s.kind} @change=${(e: Event) => (this.steps = this.steps.map((x, j) => (j === i ? { ...x, kind: (e.target as HTMLSelectElement).value as "approve" | "sign" } : x)))}>
+                  <option value="approve" ?selected=${s.kind === "approve"}>${t(this.localize, "approves")}</option>
+                  <option value="sign" ?selected=${s.kind === "sign"}>${t(this.localize, "signs")}</option>
+                </select>
               </div>`,
             )}
           </div>
-          <button type="button" class="button" @click=${() => (this.steps = [...this.steps, { email: "", title: "", due: "" }])}>${t(this.localize, "addStep")}</button>
+          <button type="button" class="button" @click=${() => (this.steps = [...this.steps, { email: "", title: "", due: "", kind: "approve" }])}>${t(this.localize, "addStep")}</button>
+          <label>${t(this.localize, "caseRef")}<input class="input" .value=${this.caseRef} placeholder="2026/EM/0114" @input=${(e: Event) => (this.caseRef = (e.target as HTMLInputElement).value)} /></label>
           ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
           <div class="row"><button type="button" class="button" @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.close()}>${t(this.localize, "cancel")}</button><button class="button primary">${t(this.localize, "send")}</button></div>
         </form>

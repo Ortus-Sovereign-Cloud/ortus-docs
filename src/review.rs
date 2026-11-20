@@ -195,15 +195,15 @@ pub async fn of_document(instance: &Instance, doc: &str) -> Result<Vec<Value>, A
 
 async fn review(instance: &Instance, id: &str) -> Result<Option<Value>, ApiError> {
     let s = instance.store.as_ref();
-    let rows = s.query("SELECT id, doc_id, created_by, state, version, note, created_at FROM docs_reviews WHERE id = $1", &[id.into()]).await?;
+    let rows = s.query("SELECT id, doc_id, created_by, state, version, note, created_at, case_ref, pdf_key, record_path FROM docs_reviews WHERE id = $1", &[id.into()]).await?;
     let Some(r) = rows.first() else {
         return Ok(None);
     };
     let by = r.text(2).unwrap_or_default().to_string();
     let mut steps = Vec::new();
-    for st in s.query("SELECT n, user_id, title, due_at, state, comment, decided_at FROM docs_review_steps WHERE review_id = $1 ORDER BY n", &[id.into()]).await? {
+    for st in s.query("SELECT n, user_id, title, due_at, state, comment, decided_at, kind FROM docs_review_steps WHERE review_id = $1 ORDER BY n", &[id.into()]).await? {
         let user = st.text(1).unwrap_or_default().to_string();
-        steps.push(json!({"n": st.int(0), "user": user, "name": name_of(instance, &user).await, "title": st.text(2), "dueAt": st.int(3), "state": st.text(4), "comment": st.text(5), "decidedAt": st.int(6)}));
+        steps.push(json!({"n": st.int(0), "user": user, "name": name_of(instance, &user).await, "title": st.text(2), "dueAt": st.int(3), "state": st.text(4), "comment": st.text(5), "decidedAt": st.int(6), "kind": st.text(7).unwrap_or("approve")}));
     }
     // The version the previous review of this document saw, for "changed since".
     let previous = s
@@ -214,6 +214,7 @@ async fn review(instance: &Instance, id: &str) -> Result<Option<Value>, ApiError
     Ok(Some(json!({
         "id": r.text(0), "doc": r.text(1), "by": name_of(instance, &by).await, "byId": by, "state": r.text(3), "version": r.int(4),
         "previousVersion": previous, "note": r.text(5), "at": r.int(6), "steps": steps,
+        "case": r.text(7), "signed": r.text(8).is_some(), "record": r.text(9),
     })))
 }
 
@@ -224,6 +225,9 @@ struct Step {
     title: String,
     #[serde(rename = "dueAt")]
     due_at: Option<i64>,
+    /// "approve" (the default) or "sign".
+    #[serde(default)]
+    kind: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -231,6 +235,8 @@ struct Send {
     steps: Vec<Step>,
     #[serde(default)]
     note: String,
+    /// The case the signed PDF is filed to ("2026/EM/0114").
+    case: Option<String>,
 }
 
 /// Sends a document for approval: a version is named, and the first
@@ -286,18 +292,62 @@ async fn send(
         }
         people.push(user.id);
     }
+    let kinds: Vec<&str> = input
+        .steps
+        .iter()
+        .map(|st| st.kind.as_deref().unwrap_or("approve"))
+        .collect();
+    if kinds.iter().any(|k| !matches!(*k, "approve" | "sign")) {
+        return Err(ApiError::bad_request("A step approves or signs."));
+    }
+    let signs = kinds.contains(&"sign");
+    let case = input
+        .case
+        .as_deref()
+        .map(|c| clean(c, 40))
+        .filter(|c| !c.is_empty());
+    if signs && signing(instance).await.is_none() {
+        return Err(ApiError::not_installed("approvals"));
+    }
     let version = store::add_version(s, &item.id, &me.id, "Sent for approval").await?;
     let review = id("r");
+    // A route that signs or files works on a PDF of the version sent,
+    // made now: what is signed is what was sent.
+    let pdf_key = if signs || case.is_some() {
+        let (_, structure) = store::version(s, &item.id, version)
+            .await?
+            .unwrap_or_default();
+        let doc: Value = serde_json::from_str(&structure).unwrap_or(Value::Null);
+        let mut who = Vec::new();
+        for (step, user) in input.steps.iter().zip(&people) {
+            if step.kind.as_deref() == Some("sign") {
+                who.push(crate::pdf::Signatory {
+                    name: name_of(instance, user).await,
+                    role: clean(&step.title, 100),
+                });
+            }
+        }
+        let bytes = crate::pdf::render(&item.name, &doc, item.label.as_deref(), &who, "Signatures");
+        let key = format!("docs/reviews/{review}.pdf");
+        instance
+            .files
+            .put(&key, &bytes)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        Some(key)
+    } else {
+        None
+    };
     let mut tx = s.begin().await?;
     tx.execute(
-        "INSERT INTO docs_reviews (id, doc_id, created_by, state, version, note, created_at) VALUES ($1, $2, $3, 'open', $4, $5, $6)",
-        &[review.as_str().into(), item.id.as_str().into(), me.id.as_str().into(), version.into(), clean(&input.note, 1000).into(), now().into()],
+        "INSERT INTO docs_reviews (id, doc_id, created_by, state, version, note, created_at, case_ref, pdf_key) VALUES ($1, $2, $3, 'open', $4, $5, $6, $7, $8)",
+        &[review.as_str().into(), item.id.as_str().into(), me.id.as_str().into(), version.into(), clean(&input.note, 1000).into(), now().into(), case.clone().into(), pdf_key.clone().into()],
     )
     .await?;
     for (n, (step, user)) in input.steps.iter().zip(&people).enumerate() {
         tx.execute(
-            "INSERT INTO docs_review_steps (review_id, n, user_id, title, due_at, state, comment) VALUES ($1, $2, $3, $4, $5, $6, '')",
-            &[review.as_str().into(), (n as i64 + 1).into(), user.as_str().into(), clean(&step.title, 100).into(), step.due_at.into(), if n == 0 { "current" } else { "waiting" }.into()],
+            "INSERT INTO docs_review_steps (review_id, n, user_id, title, due_at, state, comment, kind) VALUES ($1, $2, $3, $4, $5, $6, '', $7)",
+            &[review.as_str().into(), (n as i64 + 1).into(), user.as_str().into(), clean(&step.title, 100).into(), step.due_at.into(), if n == 0 { "current" } else { "waiting" }.into(), kinds[n].into()],
         )
         .await?;
     }
@@ -316,6 +366,86 @@ struct Decision {
     approve: bool,
     #[serde(default)]
     comment: String,
+    /// Confirms who signs when the sign-in is older than ten minutes.
+    password: Option<String>,
+}
+
+/// How recent a sign-in must be to sign without confirming again.
+const FRESH_MS: i64 = 10 * 60 * 1000;
+
+pub(crate) async fn signing(
+    instance: &Instance,
+) -> Option<Arc<dyn ortus_core::interfaces::Signing>> {
+    instance
+        .services
+        .get::<dyn ortus_core::interfaces::Signing>(&instance.switches)
+        .await
+        .ok()
+}
+
+/// Files a finished route's signed PDF to its case (once).
+pub async fn file_record(instance: &Instance, review: &str) -> Result<(), String> {
+    let s = instance.store.as_ref();
+    let rows = s
+        .query("SELECT doc_id, created_by, case_ref, pdf_key, record_path, state FROM docs_reviews WHERE id = $1", &[review.into()])
+        .await
+        .map_err(|e| e.to_string())?;
+    let Some(r) = rows.first() else { return Ok(()) };
+    let (Some(key), None, Some("approved")) = (r.text(3), r.text(4), r.text(5)) else {
+        return Ok(());
+    };
+    let Ok(records) = instance
+        .services
+        .get::<dyn ortus_core::interfaces::Records>(&instance.switches)
+        .await
+    else {
+        return Ok(());
+    };
+    let (doc, by) = (
+        r.text(0).unwrap_or_default().to_string(),
+        r.text(1).unwrap_or_default().to_string(),
+    );
+    let pdf = instance
+        .files
+        .get(key)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or("the route's PDF is missing")?;
+    let mut readers: Vec<String> = s
+        .query(
+            "SELECT user_id FROM docs_review_steps WHERE review_id = $1",
+            &[review.into()],
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter_map(|x| x.text(0).map(str::to_string))
+        .collect();
+    readers.push(by.clone());
+    let drive = crate::api::drive(instance).await.map_err(|e| e.message)?;
+    let item = drive
+        .describe(&by, &doc)
+        .await?
+        .ok_or("the document is gone")?;
+    let filed = records
+        .file(ortus_core::interfaces::NewRecord {
+            by: &by,
+            title: &item.name,
+            kind: "decision",
+            case: r.text(2),
+            label: item.label.as_deref(),
+            pdf: &pdf,
+            source: &format!("/docs?doc={doc}"),
+            readers: &readers,
+        })
+        .await?;
+    s.execute(
+        "UPDATE docs_reviews SET record_path = $1 WHERE id = $2 AND record_path IS NULL",
+        &[filed.path.as_str().into(), review.into()],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// The person whose turn it is approves, or sends the document back.
@@ -346,6 +476,67 @@ async fn decide(
     if !input.approve && comment.is_empty() {
         return Err(ApiError::bad_request("Say why it goes back."));
     }
+    // A signing step: the person confirms who they are (a recent sign-in
+    // or their password), then signs the route's PDF with their own key.
+    let step = s
+        .query("SELECT n, kind, title FROM docs_review_steps WHERE review_id = $1 AND state = 'current' AND user_id = $2", &[id.into(), me.id.as_str().into()])
+        .await?;
+    let signed_pdf = match step.first() {
+        Some(st) if input.approve && st.text(1) == Some("sign") => {
+            let session = ortus_core::auth::current(request, instance)
+                .await
+                .ok_or_else(ApiError::sign_in)?;
+            let fresh = now() - session.created_at < FRESH_MS;
+            let confirmed = match input.password.as_deref().filter(|p| !p.is_empty()) {
+                Some(p) => {
+                    ortus_core::auth::credentials::check_password(s, &me.id, p, now()).await?
+                }
+                None => false,
+            };
+            if !fresh && !confirmed {
+                return Err(ApiError {
+                    status: 403,
+                    code: "confirm",
+                    message: if input.password.is_some() {
+                        "That password is not right.".into()
+                    } else {
+                        "Confirm it is you before signing.".into()
+                    },
+                });
+            }
+            let key = s
+                .query(
+                    "SELECT pdf_key FROM docs_reviews WHERE id = $1",
+                    &[id.into()],
+                )
+                .await?
+                .first()
+                .and_then(|r| r.text(0).map(str::to_string))
+                .ok_or_else(|| ApiError::conflict("This route has no PDF to sign."))?;
+            let pdf = instance
+                .files
+                .get(&key)
+                .await
+                .map_err(|_| ApiError::internal())?
+                .ok_or_else(ApiError::internal)?;
+            let signer = signing(instance)
+                .await
+                .ok_or_else(|| ApiError::not_installed("approvals"))?;
+            let reason = st
+                .text(2)
+                .filter(|t| !t.is_empty())
+                .unwrap_or("Signed")
+                .to_string();
+            Some((
+                key,
+                signer
+                    .sign(&me.id, &pdf, &reason)
+                    .await
+                    .map_err(|_| ApiError::internal())?,
+            ))
+        }
+        _ => None,
+    };
     let mut tx = s.begin().await?;
     let current = tx.query("SELECT n FROM docs_review_steps WHERE review_id = $1 AND state = 'current' AND user_id = $2", &[id.into(), me.id.as_str().into()]).await?;
     let Some(n) = current.first().and_then(|c| c.int(0)) else {
@@ -363,6 +554,18 @@ async fn decide(
         tx.rollback().await?;
         return Err(ApiError::conflict("This step is already decided."));
     }
+    if let Some((key, bytes)) = &signed_pdf {
+        instance
+            .files
+            .put(key, bytes)
+            .await
+            .map_err(|_| ApiError::internal())?;
+        tx.execute(
+            "UPDATE docs_review_steps SET state = 'signed' WHERE review_id = $1 AND n = $2",
+            &[id.into(), n.into()],
+        )
+        .await?;
+    }
     if input.approve {
         store::advance(tx.as_mut(), id).await?;
     } else {
@@ -374,10 +577,15 @@ async fn decide(
         tx.execute("UPDATE docs_review_steps SET state = 'cancelled' WHERE review_id = $1 AND state = 'waiting'", &[id.into()]).await?;
     }
     tx.commit().await?;
+    // The route is over: its signed PDF goes to the case (the hourly
+    // sweep tries again if the records app could not take it now).
+    let _ = file_record(instance, id).await;
     ortus_core::auth::audit(
         instance,
         ortus_core::audit::Event::new(
-            if input.approve {
+            if signed_pdf.is_some() {
+                "docs.signed"
+            } else if input.approve {
                 "docs.approved"
             } else {
                 "docs.returned"
@@ -478,6 +686,68 @@ async fn review_document(
     })))
 }
 
+/// The route's PDF with the signatures made so far.
+async fn review_pdf(
+    request: &Request,
+    params: &PathParams,
+    instance: &Arc<Instance>,
+) -> Result<Response, ApiError> {
+    let me = signed(request, instance).await?;
+    let id = params.get("review").unwrap_or_default();
+    let v = review_json(instance, id).await?;
+    let item = document(
+        instance,
+        &me.id,
+        v["doc"].as_str().unwrap_or_default(),
+        "view",
+    )
+    .await?;
+    let key = instance
+        .store
+        .query(
+            "SELECT pdf_key FROM docs_reviews WHERE id = $1",
+            &[id.into()],
+        )
+        .await?
+        .first()
+        .and_then(|r| r.text(0).map(str::to_string))
+        .ok_or_else(|| ApiError::not_found("This route has no PDF."))?;
+    let bytes = instance
+        .files
+        .get(&key)
+        .await
+        .map_err(|_| ApiError::internal())?
+        .ok_or_else(|| ApiError::not_found("This route has no PDF."))?;
+    let name: String = item
+        .name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || " ._-".contains(*c))
+        .collect();
+    let header = |n: &'static str, v: String| rust_web_server::header::Header {
+        name: n.into(),
+        value: v.into(),
+    };
+    let headers = vec![
+        header(
+            "Content-Disposition",
+            format!("inline; filename=\"{}.pdf\"", name.trim()),
+        ),
+        header("X-Content-Type-Options", "nosniff".into()),
+        header(
+            "Content-Security-Policy",
+            "sandbox; default-src 'none'".into(),
+        ),
+        header("Cache-Control", "private, no-store".into()),
+    ];
+    let body =
+        rust_web_server::range::Range::get_content_range(bytes, "application/pdf".to_string());
+    Ok(Response::get_response(
+        STATUS_CODE_REASON_PHRASE.n200_ok,
+        Some(headers),
+        Some(vec![body]),
+    ))
+}
+
 /// Reviews where it is the person's turn, and their own documents out for approval.
 async fn mine(request: &Request, instance: &Arc<Instance>) -> Result<Response, ApiError> {
     let me = signed(request, instance).await?;
@@ -502,6 +772,7 @@ with_params!(h_decide, decide);
 with_params!(h_get_review, get_review);
 with_params!(h_cancel, cancel);
 with_params!(h_review_document, review_document);
+with_params!(h_review_pdf, review_pdf);
 
 fn h_mine(
     request: Request,
@@ -527,11 +798,12 @@ pub fn routes() -> Vec<Route> {
         route(Method::Get, "/docs/documents/:doc/comments", "docsComments", "A document's comments, by thread.", h_comments as ortus_core::api::Handler),
         route(Method::Post, "/docs/documents/:doc/comments", "docsComment", "Comment: {thread (to answer one), body, quote, assign (an address)}.", h_add_comment),
         route(Method::Post, "/docs/documents/:doc/comments/:thread/resolve", "docsResolve", "Mark a thread resolved.", h_resolve),
-        route(Method::Post, "/docs/documents/:doc/reviews", "docsSendForApproval", "Send for approval: {steps: [{email, title, dueAt}], note}. A version is named; the first person has their turn.", h_send),
+        route(Method::Post, "/docs/documents/:doc/reviews", "docsSendForApproval", "Send for approval: {steps: [{email, title, dueAt, kind: approve|sign}], note, case}. A version is named; a route that signs works on a PDF of it, filed to the case when everyone has signed.", h_send),
         route(Method::Get, "/docs/reviews/mine", "docsMyReviews", "Reviews where it is one's turn.", h_mine),
         route(Method::Get, "/docs/reviews/:review", "docsReview", "A review with its steps.", h_get_review),
-        route(Method::Post, "/docs/reviews/:review/decide", "docsDecide", "The person whose turn it is: {approve, comment}. Sending back needs a comment.", h_decide),
+        route(Method::Post, "/docs/reviews/:review/decide", "docsDecide", "The person whose turn it is: {approve, comment, password}. Sending back needs a comment; signing needs a sign-in in the last ten minutes or the password.", h_decide),
         route(Method::Post, "/docs/reviews/:review/cancel", "docsReviewCancel", "An editor withdraws a route still open.", h_cancel),
         route(Method::Get, "/docs/reviews/:review/document", "docsReviewDocument", "The document as it was sent, the text the review before saw, and whether it was edited since.", h_review_document),
+        route(Method::Get, "/docs/reviews/:review/pdf", "docsReviewPdf", "The PDF a route signs, with the signatures made so far.", h_review_pdf),
     ]
 }

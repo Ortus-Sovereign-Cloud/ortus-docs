@@ -90,6 +90,14 @@ pub const MIGRATIONS: &[Migration] = &[
     CREATE INDEX docs_documents_owner ON docs_documents (owner_id);
     ALTER TABLE docs_versions ADD COLUMN json TEXT",
     },
+    Migration {
+        version: 3,
+        name: "routes that sign and file",
+        sql: "ALTER TABLE docs_review_steps ADD COLUMN kind TEXT NOT NULL DEFAULT 'approve';
+    ALTER TABLE docs_reviews ADD COLUMN case_ref TEXT;
+    ALTER TABLE docs_reviews ADD COLUMN pdf_key TEXT;
+    ALTER TABLE docs_reviews ADD COLUMN record_path TEXT",
+    },
 ];
 
 /// An update larger than this is refused.

@@ -4,8 +4,10 @@
 //! to a program through [`apps`].
 
 pub mod api;
+pub mod pdf;
 pub mod review;
 pub mod store;
+pub mod ttf;
 
 use std::sync::Arc;
 
@@ -58,6 +60,17 @@ pub async fn sweep(instance: &Instance) -> Result<(), String> {
         return Ok(());
     };
     let s = instance.store.as_ref();
+    // Routes that finished while the records app could not take their PDF.
+    let unfiled: Vec<String> = s
+        .query("SELECT id FROM docs_reviews WHERE state = 'approved' AND pdf_key IS NOT NULL AND record_path IS NULL", &[])
+        .await
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter_map(|r| r.text(0).map(str::to_string))
+        .collect();
+    for review in unfiled {
+        let _ = review::file_record(instance, &review).await;
+    }
     for (doc, owner) in store::documents(s).await.map_err(|e| e.to_string())? {
         if let Ok(None) = drive.describe(&owner, &doc).await {
             let mut tx = s.begin().await.map_err(|e| e.to_string())?;

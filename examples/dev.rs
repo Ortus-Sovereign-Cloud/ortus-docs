@@ -85,6 +85,65 @@ impl Drive for StandIn {
     }
 }
 
+/// Signs by appending a note (the real signing is the approvals app's).
+struct StandInSigning;
+
+impl ortus_core::interfaces::Signing for StandInSigning {
+    fn sign<'a>(
+        &'a self,
+        user: &'a str,
+        pdf: &'a [u8],
+        reason: &'a str,
+    ) -> BoxFuture<'a, Result<Vec<u8>, String>> {
+        let mut out = pdf.to_vec();
+        out.extend_from_slice(format!("\n%signed-by {user} ({reason})\n").as_bytes());
+        Box::pin(async move { Ok(out) })
+    }
+    fn verify<'a>(
+        &'a self,
+        _: &'a [u8],
+    ) -> BoxFuture<'a, Result<Vec<ortus_core::interfaces::SignatureCheck>, String>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+}
+
+/// Takes records and forgets them.
+struct StandInRecords;
+
+impl ortus_core::interfaces::Records for StandInRecords {
+    fn file<'a>(
+        &'a self,
+        _: ortus_core::interfaces::NewRecord<'a>,
+    ) -> BoxFuture<'a, Result<ItemRef, String>> {
+        Box::pin(async {
+            Ok(ItemRef {
+                app: "records".into(),
+                id: "r1".into(),
+                path: "/records?record=r1".into(),
+            })
+        })
+    }
+}
+
+struct DevApprovals;
+
+impl App for DevApprovals {
+    fn info(&self) -> AppInfo {
+        AppInfo {
+            id: "approvals",
+            group: Group::Create,
+            path: "/approvals",
+            order: 3,
+        }
+    }
+    fn provide(&self, _: &Arc<Instance>, services: &ortus_core::services::Services) {
+        let signing: Arc<dyn ortus_core::interfaces::Signing> = Arc::new(StandInSigning);
+        services.provide("approvals", signing);
+        let records: Arc<dyn ortus_core::interfaces::Records> = Arc::new(StandInRecords);
+        services.provide("approvals", records);
+    }
+}
+
 struct DevDrive(Arc<StandIn>);
 
 impl App for DevDrive {
@@ -107,6 +166,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut apps = ortus_docs::apps();
     apps.push(Arc::new(DevDrive(Arc::new(StandIn::default()))));
+    apps.push(Arc::new(DevApprovals));
     let status = ortus_core::cli::run("ortus-docs-dev", ortus_core::VERSION, apps, &args).await;
     std::process::exit(status);
 }

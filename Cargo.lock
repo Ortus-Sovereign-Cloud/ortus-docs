@@ -2186,7 +2186,9 @@ name = "ortus-docs"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "miniz_oxide 0.8.9",
  "ortus-core",
+ "pdf-writer",
  "rust-embed",
  "rust-web-server",
  "serde",
@@ -2232,6 +2234,18 @@ dependencies = [
  "base64ct",
  "rand_core 0.6.4",
  "subtle",
+]
+
+[[package]]
+name = "pdf-writer"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5df03c7d216de06f93f398ef06f1385a60f2c597bb96f8195c8d98e08a26b1d5"
+dependencies = [
+ "bitflags",
+ "itoa",
+ "memchr",
+ "ryu",
 ]
 
 [[package]]

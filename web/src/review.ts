@@ -10,9 +10,10 @@ interface Step {
   name: string;
   title: string;
   dueAt: number | null;
-  state: "current" | "waiting" | "approved" | "returned" | "cancelled" | "skipped";
+  state: "current" | "waiting" | "approved" | "signed" | "returned" | "cancelled" | "skipped";
   comment: string;
   decidedAt: number | null;
+  kind: "approve" | "sign";
 }
 
 interface Review {
@@ -22,6 +23,9 @@ interface Review {
   state: string;
   version: number;
   previousVersion: number | null;
+  case: string | null;
+  signed: boolean;
+  record: string | null;
   at: number;
   steps: Step[];
 }
@@ -36,6 +40,10 @@ interface PMNode {
 
 function lang(): string {
   return document.documentElement.lang || "en";
+}
+
+function when(ms: number): string {
+  return new Intl.DateTimeFormat(lang(), { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(ms));
 }
 
 function hm(ms: number): string {
@@ -228,6 +236,52 @@ export class OrtusDocsReview extends LitElement {
       textarea {
         font: inherit;
       }
+      .boxes {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-block-start: 28px;
+        font-family: var(--ortus-font);
+      }
+      .box {
+        display: grid;
+        gap: 4px;
+        padding: 14px;
+        border-radius: 10px;
+        border: 1px dashed #b9bdc8;
+        font-size: 13px;
+        color: #4b5060;
+      }
+      .box.done {
+        border: 1px solid #8fd6b7;
+        background: #eefaf4;
+      }
+      .box strong {
+        color: #1b1d24;
+        font-size: 14px;
+      }
+      .box em {
+        font-style: normal;
+        font-weight: 600;
+      }
+      .box.done em {
+        color: #1d7a55;
+      }
+      .case {
+        color: var(--ortus-text-3);
+        font-size: 13px;
+      }
+      .case b {
+        font-family: var(--ortus-mono, monospace);
+        font-weight: 500;
+        color: var(--ortus-text-2);
+      }
+      label.confirm {
+        display: grid;
+        gap: 6px;
+        font-size: 13px;
+        color: var(--ortus-text-2);
+      }
       .error {
         color: var(--ortus-red);
         margin: 0;
@@ -245,6 +299,7 @@ export class OrtusDocsReview extends LitElement {
   @state() private me = "";
   @state() private error = "";
   @state() private busy = false;
+  @state() private confirming = false;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -314,11 +369,15 @@ export class OrtusDocsReview extends LitElement {
     const r = this.review;
     if (!r) return;
     const comment = this.renderRoot.querySelector<HTMLTextAreaElement>("textarea")?.value ?? "";
+    const password = this.renderRoot.querySelector<HTMLInputElement>("input.password")?.value || undefined;
     this.busy = true;
     this.error = "";
     try {
-      this.review = await call<Review>("POST", `/docs/reviews/${encodeURIComponent(r.id)}/decide`, { approve, comment });
+      this.review = await call<Review>("POST", `/docs/reviews/${encodeURIComponent(r.id)}/decide`, { approve, comment, password });
+      this.confirming = false;
     } catch (e) {
+      // Signing asks who it is when the sign-in is old.
+      if (e instanceof ApiError && e.code === "confirm") this.confirming = true;
       this.error = e instanceof ApiError ? e.message : String(e);
     } finally {
       this.busy = false;
@@ -333,6 +392,7 @@ export class OrtusDocsReview extends LitElement {
     const changed = (this.doc?.content ?? []).filter((b) => b.type !== "table" && this.isNew(b)).map((b) => this.textOf(b));
     return html`<header>
         <h1><a href="/docs">${t(this.localize, "approvals")}</a> / ${this.name} · v${r.version}</h1>
+        ${r.case ? html`<span class="case">${t(this.localize, "caseLabel")} <b>${r.case}</b></span>` : nothing}
         ${this.label ? html`<span class="label">${this.label.toUpperCase()}</span>` : nothing}
       </header>
       <div class="body">
@@ -340,6 +400,16 @@ export class OrtusDocsReview extends LitElement {
           ${this.edited ? html`<p class="edited" role="note">${t(this.localize, "editedSince", { n: r.version })}</p>` : nothing}
           ${(this.doc?.content ?? []).map((b) => this.block(b))}
           ${changed.length ? html`<footer>${t(this.localize, "markedChanged", { count: changed.length })}</footer>` : nothing}
+          ${r.signed
+            ? html`<div class="boxes">
+                ${r.steps.map(
+                  (s) => html`<div class="box ${s.state === "signed" || s.state === "approved" ? "done" : ""}">
+                    <strong>${s.name}</strong><span>${s.title}</span>
+                    <em>${s.state === "signed" ? t(this.localize, "signedAt", { time: when(s.decidedAt!) }) : s.state === "approved" ? t(this.localize, "approvedAt", { time: when(s.decidedAt!) }) : t(this.localize, "waitingWord")}</em>
+                  </div>`,
+                )}
+              </div>`
+            : nothing}
         </article>
         <aside>
           ${mine
@@ -348,13 +418,18 @@ export class OrtusDocsReview extends LitElement {
                 <h2>${t(this.localize, "asksYou", { who: r.by.split(" ")[0] ?? r.by, what: mine.title || t(this.localize, "toReview") })}</h2>
                 <p>${t(this.localize, "sentAt", { time: hm(r.at) })}${next ? ` · ${t(this.localize, "nextAfterYou", { who: next.name })}` : ""}${mine.dueAt ? ` · ${t(this.localize, "byTime", { time: hm(mine.dueAt) })}` : ""}</p>
                 <textarea class="input" rows="3" placeholder=${t(this.localize, "commentOptional")} aria-label=${t(this.localize, "commentOptional")}></textarea>
+                ${this.confirming
+                  ? html`<label class="confirm">${t(this.localize, "confirmPassword")}<input class="input password" type="password" autocomplete="current-password" /></label>
+                      <small>${t(this.localize, "orSignInAgain")} <a href="/sign-in">${t(this.localize, "signInAgain")}</a></small>`
+                  : nothing}
                 ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
                 <div class="row">
-                  <button class="button primary" ?disabled=${this.busy} @click=${() => this.decide(true)}>${t(this.localize, "approve")}</button>
+                  <button class="button primary" ?disabled=${this.busy} @click=${() => this.decide(true)}>${mine.kind === "sign" ? t(this.localize, "sign") : t(this.localize, "approve")}</button>
                   <button class="button" ?disabled=${this.busy} @click=${() => this.decide(false)}>${t(this.localize, "sendBack")}</button>
                 </div>
+                ${mine.kind === "sign" ? html`<small>${t(this.localize, "signNote")}</small>` : nothing}
               </section>`
-            : html`<section class="card" role="status"><p>${r.state === "approved" ? t(this.localize, "allApproved") : r.state === "returned" ? t(this.localize, "wasReturned") : t(this.localize, "notYourTurn")}</p></section>`}
+            : html`<section class="card" role="status"><p>${r.state === "approved" ? (r.signed ? t(this.localize, "allSigned") : t(this.localize, "allApproved")) : r.state === "returned" ? t(this.localize, "wasReturned") : t(this.localize, "notYourTurn")}</p>${r.record ? html`<a class="button" href=${r.record}>${t(this.localize, "openRecord")}</a>` : nothing}</section>`}
           ${r.previousVersion
             ? html`<section class="card" aria-label=${t(this.localize, "changedSince", { n: r.previousVersion })}>
                 <strong>${t(this.localize, "changedSince", { n: r.previousVersion })}</strong>
@@ -362,13 +437,20 @@ export class OrtusDocsReview extends LitElement {
               </section>`
             : nothing}
           <section class="card" aria-label=${t(this.localize, "route")}>
+            <h2>${t(this.localize, "approvalRoute")}</h2>
             <ol>
               ${r.steps.map(
                 (s) => html`<li>
-                  <span class="n ${s.state}" aria-hidden="true">${s.state === "approved" ? "✓" : s.state === "returned" ? "↩" : s.n}</span>
+                  <span class="n ${s.state}" aria-hidden="true">${s.state === "approved" || s.state === "signed" ? "✓" : s.state === "returned" ? "↩" : s.n}</span>
                   <span><strong>${s.title || t(this.localize, "toReview")}</strong><small>${s.user === this.me ? t(this.localize, "you") : s.name}${s.decidedAt ? ` · ${hm(s.decidedAt)}` : s.state === "current" ? ` · ${t(this.localize, "now")}` : ""}${s.comment ? ` · “${s.comment}”` : ""}</small></span>
                 </li>`,
               )}
+            ${r.signed
+                ? html`<li>
+                    <span class="n ${r.record ? "approved" : ""}" aria-hidden="true">${r.record ? "✓" : r.steps.length + 1}</span>
+                    <span><strong>${t(this.localize, "fileStep")}</strong><small>${r.case ? t(this.localize, "fileTo", { case: r.case }) : t(this.localize, "fileAuto")}</small></span>
+                  </li>`
+                : nothing}
             </ol>
           </section>
         </aside>

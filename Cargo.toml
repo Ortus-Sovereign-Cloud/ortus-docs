@@ -17,6 +17,8 @@ tokio = { version = "1", features = ["time", "sync", "macros", "rt"] }
 # Built from the commit in pins.toml (checked out by ci/fetch.sh), never
 # from the branch: see the patch below.
 ortus-core = { git = "https://github.com/Ortus-Sovereign-Cloud/ortus-core" }
+pdf-writer = "0.12"
+miniz_oxide = "0.8"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
