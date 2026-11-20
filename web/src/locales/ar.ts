@@ -105,6 +105,13 @@ const messages: Record<DocsKey, DocsMessage> = {
   caseLabel: "الملف",
   approvalRoute: "مسار الاعتماد",
   signNote: "توقيع بشهادة مؤسستك. يُحفظ ملف PDF الموقّع في الملف تلقائيًا.",
+  publishMustRead: "نشر كقراءة إلزامية",
+  publishedMustRead: "نُشر كقراءة إلزامية",
+  publishLead: "يقرأ كل من طُلب منه هذا النص بصيغته الحالية ويؤكد أنه فهمه. لا تظهر لهم التعديلات اللاحقة.",
+  publishGroups: "المجموعات (مفصولة بفواصل؛ فارغ: الجميع)",
+  everyone: "الجميع",
+  publishNote: "سطر فوق العنوان (المسؤول عنه)",
+  publish: "نشر",
   now: "الآن",
 };
 

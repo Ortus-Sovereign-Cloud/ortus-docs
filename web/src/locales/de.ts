@@ -105,6 +105,13 @@ const messages: Record<DocsKey, DocsMessage> = {
   caseLabel: "Akte",
   approvalRoute: "Freigabeablauf",
   signNote: "Eine Unterschrift mit dem Zertifikat Ihrer Organisation. Das unterschriebene PDF wird automatisch in der Akte abgelegt.",
+  publishMustRead: "Als Pflichtlektüre veröffentlichen",
+  publishedMustRead: "Als Pflichtlektüre veröffentlicht",
+  publishLead: "Alle Angesprochenen lesen diesen Text in der jetzigen Fassung und bestätigen, dass sie ihn verstanden haben. Spätere Änderungen sehen sie nicht.",
+  publishGroups: "Gruppen (durch Kommas getrennt; leer: alle)",
+  everyone: "Alle",
+  publishNote: "Eine Zeile über dem Titel (wer verantwortlich ist)",
+  publish: "Veröffentlichen",
   now: "jetzt",
 };
 

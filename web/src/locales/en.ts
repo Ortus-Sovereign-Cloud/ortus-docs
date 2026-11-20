@@ -106,6 +106,13 @@ const en = {
   caseLabel: "Case",
   approvalRoute: "Approval route",
   signNote: "A signature with your organisation certificate. The signed PDF is filed to the case automatically.",
+  publishMustRead: "Publish as must-read",
+  publishedMustRead: "Published as must-read",
+  publishLead: "Everyone asked reads this text as it is now and confirms they understood it. Later edits are not shown to them.",
+  publishGroups: "Groups (separated by commas; empty: everyone)",
+  everyone: "Everyone",
+  publishNote: "A line above the title (who owns it)",
+  publish: "Publish",
   now: "now",
 };
 

@@ -105,6 +105,13 @@ const messages: Record<DocsKey, DocsMessage> = {
   caseLabel: "Dossier",
   approvalRoute: "Circuit d’approbation",
   signNote: "Une signature avec le certificat de votre organisation. Le PDF signé est classé automatiquement au dossier.",
+  publishMustRead: "Publier en lecture obligatoire",
+  publishedMustRead: "Publié en lecture obligatoire",
+  publishLead: "Chaque personne concernée lit ce texte tel qu’il est maintenant et confirme l’avoir compris. Les modifications ultérieures ne lui sont pas montrées.",
+  publishGroups: "Groupes (séparés par des virgules ; vide : tout le monde)",
+  everyone: "Tout le monde",
+  publishNote: "Une ligne au-dessus du titre (qui en est responsable)",
+  publish: "Publier",
   now: "maintenant",
 };
 

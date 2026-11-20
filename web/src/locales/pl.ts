@@ -105,6 +105,13 @@ const messages: Record<DocsKey, DocsMessage> = {
   caseLabel: "Sprawa",
   approvalRoute: "Ścieżka zatwierdzania",
   signNote: "Podpis certyfikatem Twojej organizacji. Podpisany PDF trafi do sprawy automatycznie.",
+  publishMustRead: "Opublikuj jako obowiązkową lekturę",
+  publishedMustRead: "Opublikowano jako obowiązkową lekturę",
+  publishLead: "Każdy wskazany przeczyta ten tekst w obecnej postaci i potwierdzi, że go rozumie. Późniejsze zmiany nie będą widoczne.",
+  publishGroups: "Grupy (oddzielone przecinkami; puste: wszyscy)",
+  everyone: "Wszyscy",
+  publishNote: "Linia nad tytułem (kto za to odpowiada)",
+  publish: "Opublikuj",
   now: "teraz",
 };
 

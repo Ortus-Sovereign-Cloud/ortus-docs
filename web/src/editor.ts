@@ -353,6 +353,9 @@ export class OrtusDocsEditor extends LitElement {
   @state() private draftComment: { quote: string; from: number; to: number } | null = null;
   @state() private steps: { email: string; title: string; due: string; kind: "approve" | "sign" }[] = [{ email: "", title: "", due: "", kind: "approve" }];
   @state() private caseRef = "";
+  /** An administrator with the records app may publish a must-read. */
+  @state() private canPublish = false;
+  @state() private published = false;
   @query(".page") private page!: HTMLElement;
   private view: EditorView | null = null;
   private sync: Sync | null = null;
@@ -393,6 +396,8 @@ export class OrtusDocsEditor extends LitElement {
       await this.updateComplete;
       this.mount(opened);
       await this.loadComments();
+      const [me, apps] = await Promise.all([call<{ role: string }>("GET", "/me"), call<{ apps: { id: string }[] }>("GET", "/apps")]);
+      this.canPublish = (me.role === "admin" || me.role === "owner") && apps.apps.some((a) => a.id === "records");
     } catch (e) {
       this.error = e instanceof ApiError ? e.message : String(e);
     }
@@ -570,6 +575,20 @@ export class OrtusDocsEditor extends LitElement {
     }
   }
 
+  private async publish(e: Event): Promise<void> {
+    e.preventDefault();
+    const form = e.target as HTMLFormElement;
+    const groups = (form.elements.namedItem("groups") as HTMLInputElement).value.split(",").map((g) => g.trim()).filter(Boolean);
+    const note = (form.elements.namedItem("note") as HTMLInputElement).value;
+    try {
+      await call("POST", "/records/must-read", { title: this.opened?.name, note, body: this.view?.state.doc.toJSON(), source: `/docs?doc=${encodeURIComponent(this.docId())}`, groups });
+      this.published = true;
+      this.renderRoot.querySelector<HTMLDialogElement>("dialog.publish")?.close();
+    } catch (err) {
+      this.error = err instanceof ApiError ? err.message : String(err);
+    }
+  }
+
   private async withdraw(): Promise<void> {
     const review = this.opened?.review as { id: string } | null | undefined;
     if (!review) return;
@@ -619,6 +638,7 @@ export class OrtusDocsEditor extends LitElement {
         </select>
         ${this.canEdit() && review?.state !== "open" ? html`<button class="button" @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.approval")?.showModal()}>${t(this.localize, "sendForApproval")}</button>` : nothing}
         ${this.canEdit() && review?.state === "open" ? html`<button class="button" @click=${this.withdraw}>${t(this.localize, "withdraw")}</button>` : nothing}
+        ${this.canPublish ? html`<button class="button" ?disabled=${this.published} @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.publish")?.showModal()}>${this.published ? t(this.localize, "publishedMustRead") : t(this.localize, "publishMustRead")}</button>` : nothing}
         <button class="button primary" @click=${() => location.assign(`/drive?file=${encodeURIComponent(o.id)}&share=1`)}>${t(this.localize, "share")}</button>
       </header>
       <div class="tools" role="toolbar" aria-label=${t(this.localize, "format")}>
@@ -673,6 +693,16 @@ export class OrtusDocsEditor extends LitElement {
           })}
         </aside>
       </div>
+      <dialog class="publish" aria-label=${t(this.localize, "publishMustRead")}>
+        <form @submit=${this.publish}>
+          <h2>${t(this.localize, "publishMustRead")}</h2>
+          <p>${t(this.localize, "publishLead")}</p>
+          <label>${t(this.localize, "publishGroups")}<input class="input" name="groups" placeholder=${t(this.localize, "everyone")} /></label>
+          <label>${t(this.localize, "publishNote")}<input class="input" name="note" /></label>
+          ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
+          <div class="row"><button type="button" class="button" @click=${() => this.renderRoot.querySelector<HTMLDialogElement>("dialog.publish")?.close()}>${t(this.localize, "cancel")}</button><button class="button primary">${t(this.localize, "publish")}</button></div>
+        </form>
+      </dialog>
       <dialog class="approval" aria-label=${t(this.localize, "sendForApproval")}>
         <form @submit=${this.sendForApproval}>
           <h2>${t(this.localize, "sendForApproval")}</h2>
