@@ -360,7 +360,7 @@ fn events(
             // A gone client is noticed within seconds.
             if store::now() - pinged > 2_000 {
                 pinged = store::now();
-                if events.comment("").is_err() {
+                if events.comment("ping").is_err() {
                     return;
                 }
             }
