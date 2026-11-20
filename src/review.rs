@@ -301,6 +301,14 @@ async fn send(
         return Err(ApiError::bad_request("A step approves or signs."));
     }
     let signs = kinds.contains(&"sign");
+    // What is approved or signed is the text as it reads: no suggestion
+    // may be left open (they read differently before and after).
+    let (_, structure) = store::text(s, &item.id).await?;
+    if structure.contains("\"type\":\"insertion\"") || structure.contains("\"type\":\"deletion\"") {
+        return Err(ApiError::conflict(
+            "Accept or reject the open suggestions before sending for approval.",
+        ));
+    }
     let case = input
         .case
         .as_deref()
@@ -401,6 +409,38 @@ pub async fn file_record(instance: &Instance, review: &str) -> Result<(), String
     else {
         return Ok(());
     };
+    // Claimed first: a route is filed once, even when the last decision
+    // and the hourly sweep come together.
+    let claimed = s
+        .execute("UPDATE docs_reviews SET record_path = 'filing' WHERE id = $1 AND record_path IS NULL AND state = 'approved'", &[review.into()])
+        .await
+        .map_err(|e| e.to_string())?;
+    if claimed != 1 {
+        return Ok(());
+    }
+    let result = file_claimed(instance, review, records.as_ref(), r, key).await;
+    let path = match &result {
+        Ok(path) => Some(path.clone()),
+        Err(_) => None,
+    };
+    // Filed: its address; not: released for the next try.
+    s.execute(
+        "UPDATE docs_reviews SET record_path = $1 WHERE id = $2 AND record_path = 'filing'",
+        &[path.into(), review.into()],
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    result.map(|_| ())
+}
+
+async fn file_claimed(
+    instance: &Instance,
+    review: &str,
+    records: &dyn ortus_core::interfaces::Records,
+    r: &ortus_core::storage::Row,
+    key: &str,
+) -> Result<String, String> {
+    let s = instance.store.as_ref();
     let (doc, by) = (
         r.text(0).unwrap_or_default().to_string(),
         r.text(1).unwrap_or_default().to_string(),
@@ -439,13 +479,7 @@ pub async fn file_record(instance: &Instance, review: &str) -> Result<(), String
             readers: &readers,
         })
         .await?;
-    s.execute(
-        "UPDATE docs_reviews SET record_path = $1 WHERE id = $2 AND record_path IS NULL",
-        &[filed.path.as_str().into(), review.into()],
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(filed.path)
 }
 
 /// The person whose turn it is approves, or sends the document back.
@@ -489,7 +523,22 @@ async fn decide(
             let fresh = now() - session.created_at < FRESH_MS;
             let confirmed = match input.password.as_deref().filter(|p| !p.is_empty()) {
                 Some(p) => {
-                    ortus_core::auth::credentials::check_password(s, &me.id, p, now()).await?
+                    // As slow to guess as signing in.
+                    let key = format!("sign-confirm:{}", me.id);
+                    if let Some(until) =
+                        ortus_core::auth::limits::blocked_until(s, &key, now()).await?
+                    {
+                        return Err(ApiError::too_many(format!(
+                            "Too many tries. Try again in {} seconds.",
+                            (until - now()).max(1000) / 1000
+                        )));
+                    }
+                    let good =
+                        ortus_core::auth::credentials::check_password(s, &me.id, p, now()).await?;
+                    if good {
+                        ortus_core::auth::limits::succeeded(s, &[key]).await?;
+                    }
+                    good
                 }
                 None => false,
             };
@@ -527,13 +576,15 @@ async fn decide(
                 .filter(|t| !t.is_empty())
                 .unwrap_or("Signed")
                 .to_string();
-            Some((
-                key,
-                signer
-                    .sign(&me.id, &pdf, &reason)
-                    .await
-                    .map_err(|_| ApiError::internal())?,
-            ))
+            let signed = signer
+                .sign(&me.id, &pdf, &reason)
+                .await
+                .map_err(|_| ApiError::internal())?;
+            let _ = key;
+            // Each signature in a file of its own: the route points at it
+            // only when the step is decided.
+            let n = st.int(0).unwrap_or(0);
+            Some((format!("docs/reviews/{id}-{n}.pdf"), signed))
         }
         _ => None,
     };
@@ -563,6 +614,11 @@ async fn decide(
         tx.execute(
             "UPDATE docs_review_steps SET state = 'signed' WHERE review_id = $1 AND n = $2",
             &[id.into(), n.into()],
+        )
+        .await?;
+        tx.execute(
+            "UPDATE docs_reviews SET pdf_key = $1 WHERE id = $2",
+            &[key.as_str().into(), id.into()],
         )
         .await?;
     }

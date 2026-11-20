@@ -73,6 +73,27 @@ pub async fn sweep(instance: &Instance) -> Result<(), String> {
     }
     for (doc, owner) in store::documents(s).await.map_err(|e| e.to_string())? {
         if let Ok(None) = drive.describe(&owner, &doc).await {
+            // The routes' PDFs go too (they carry names and signatures).
+            let reviews: Vec<String> = s
+                .query(
+                    "SELECT id FROM docs_reviews WHERE doc_id = $1",
+                    &[doc.as_str().into()],
+                )
+                .await
+                .map_err(|e| e.to_string())?
+                .iter()
+                .filter_map(|r| r.text(0).map(str::to_string))
+                .collect();
+            for review in reviews {
+                for key in instance
+                    .files
+                    .list(&format!("docs/reviews/{review}"))
+                    .await
+                    .unwrap_or_default()
+                {
+                    let _ = instance.files.delete(&key).await;
+                }
+            }
             let mut tx = s.begin().await.map_err(|e| e.to_string())?;
             store::forget_document(tx.as_mut(), &doc)
                 .await

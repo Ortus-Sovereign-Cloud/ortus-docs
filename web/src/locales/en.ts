@@ -113,6 +113,8 @@ const en = {
   everyone: "Everyone",
   publishNote: "A line above the title (who owns it)",
   publish: "Publish",
+  openPdf: "Open the PDF you sign",
+  settleFirst: "Accept or reject the open suggestions first.",
   now: "now",
 };
 

@@ -871,6 +871,44 @@ fn a_route_signs_the_pdf_and_files_it_to_the_case() {
             .0,
             "{name}"
         );
+        // An open suggestion: nothing is sent until it is settled.
+        call(
+            &client,
+            &marek,
+            "POST",
+            &format!("/docs/documents/{doc}/updates?client=m"),
+            Some(b"u2".to_vec()),
+            false,
+        );
+        let suggested = json!({"type": "doc", "content": [{"type": "paragraph", "content": [{"type": "text", "text": "not ", "marks": [{"type": "deletion", "attrs": {"id": "s1", "author": "Ana"}}]}]}]});
+        post(
+            &marek,
+            &format!("/docs/documents/{doc}/checkpoint"),
+            json!({"seq": 2, "state": B64.encode(b"s2"), "doc": suggested}),
+        );
+        assert_eq!(
+            409,
+            post(
+                &marek,
+                &format!("/docs/documents/{doc}/reviews"),
+                json!({"steps": [{"email": "olena@ministry.example"}]})
+            )
+            .0,
+            "{name}"
+        );
+        call(
+            &client,
+            &marek,
+            "POST",
+            &format!("/docs/documents/{doc}/updates?client=m"),
+            Some(b"u3".to_vec()),
+            false,
+        );
+        post(
+            &marek,
+            &format!("/docs/documents/{doc}/checkpoint"),
+            json!({"seq": 3, "state": B64.encode(b"s3"), "doc": structure}),
+        );
         let (status, route) = post(
             &marek,
             &format!("/docs/documents/{doc}/reviews"),

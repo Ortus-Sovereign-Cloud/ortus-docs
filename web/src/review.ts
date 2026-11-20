@@ -334,10 +334,11 @@ export class OrtusDocsReview extends LitElement {
   }
 
   private inline(nodes: PMNode[] = []): (TemplateResult | string)[] {
-    return nodes.map((n) => {
-      if (n.type !== "text") return "";
-      // Suggestions not yet settled show as the text would read once accepted.
-      if (n.marks?.some((m) => m.type === "deletion")) return "";
+    // The same text the PDF sets: every text inside, as it stands
+    // (a route is only sent with no suggestions open).
+    return nodes.flatMap((n) => {
+      if (n.type === "hard_break") return ["\n"];
+      if (n.type !== "text") return this.inline(n.content);
       let out: TemplateResult | string = n.text ?? "";
       if (n.marks?.some((m) => m.type === "strong")) out = html`<strong>${out}</strong>`;
       if (n.marks?.some((m) => m.type === "em")) out = html`<em>${out}</em>`;
@@ -356,6 +357,8 @@ export class OrtusDocsReview extends LitElement {
         return html`<ul>${(node.content ?? []).map((li) => html`<li>${(li.content ?? []).map((b) => this.block(b))}</li>`)}</ul>`;
       case "ordered_list":
         return html`<ol>${(node.content ?? []).map((li) => html`<li>${(li.content ?? []).map((b) => this.block(b))}</li>`)}</ol>`;
+      case "blockquote":
+        return html`<blockquote>${(node.content ?? []).map((b) => this.block(b))}</blockquote>`;
       case "table":
         return html`<table>
           ${(node.content ?? []).map((row) => html`<tr>${(row.content ?? []).map((cell) => (cell.type === "table_header" ? html`<th>${this.textOf(cell)}</th>` : html`<td>${this.textOf(cell)}</td>`))}</tr>`)}
@@ -427,7 +430,10 @@ export class OrtusDocsReview extends LitElement {
                   <button class="button primary" ?disabled=${this.busy} @click=${() => this.decide(true)}>${mine.kind === "sign" ? t(this.localize, "sign") : t(this.localize, "approve")}</button>
                   <button class="button" ?disabled=${this.busy} @click=${() => this.decide(false)}>${t(this.localize, "sendBack")}</button>
                 </div>
-                ${mine.kind === "sign" ? html`<small>${t(this.localize, "signNote")}</small>` : nothing}
+                ${mine.kind === "sign"
+                  ? html`<small>${t(this.localize, "signNote")}</small>
+                      <a href=${`/api/v1/docs/reviews/${encodeURIComponent(r.id)}/pdf`} target="_blank" rel="noopener">${t(this.localize, "openPdf")}</a>`
+                  : nothing}
               </section>`
             : html`<section class="card" role="status"><p>${r.state === "approved" ? (r.signed ? t(this.localize, "allSigned") : t(this.localize, "allApproved")) : r.state === "returned" ? t(this.localize, "wasReturned") : t(this.localize, "notYourTurn")}</p>${r.record ? html`<a class="button" href=${r.record}>${t(this.localize, "openRecord")}</a>` : nothing}</section>`}
           ${r.previousVersion

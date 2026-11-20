@@ -563,6 +563,10 @@ export class OrtusDocsEditor extends LitElement {
 
   private async sendForApproval(e: Event): Promise<void> {
     e.preventDefault();
+    if (this.list.length) {
+      this.error = t(this.localize, "settleFirst");
+      return;
+    }
     try {
       await this.sync?.settle();
       const steps = this.steps.filter((s) => s.email.trim()).map((s) => ({ email: s.email.trim(), title: s.title.trim(), dueAt: s.due ? Date.parse(s.due) : undefined, kind: s.kind }));

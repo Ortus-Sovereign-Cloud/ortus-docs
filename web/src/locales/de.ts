@@ -112,6 +112,8 @@ const messages: Record<DocsKey, DocsMessage> = {
   everyone: "Alle",
   publishNote: "Eine Zeile über dem Titel (wer verantwortlich ist)",
   publish: "Veröffentlichen",
+  openPdf: "Das PDF öffnen, das Sie unterschreiben",
+  settleFirst: "Nehmen Sie offene Vorschläge zuerst an oder lehnen Sie sie ab.",
   now: "jetzt",
 };
 
