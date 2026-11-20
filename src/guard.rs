@@ -9,8 +9,9 @@ use std::collections::BTreeSet;
 
 use yrs::types::text::YChange;
 use yrs::types::Attrs;
+use yrs::types::ToJson;
 use yrs::updates::decoder::Decode;
-use yrs::{Any, Doc, Out, ReadTxn, Text, Transact, Update, XmlFragment, XmlOut};
+use yrs::{Any, Doc, Out, ReadTxn, Text, Transact, Update, Xml, XmlFragment, XmlOut};
 
 const FRAGMENT: &str = "prosemirror";
 
@@ -27,20 +28,30 @@ fn load(parts: &[&[u8]]) -> Result<Doc, String> {
     Ok(doc)
 }
 
-/// The accepted text, and every suggestion's (id, author).
+/// The accepted text, every suggestion (id → author), every comment id,
+/// and the document's other top-level types.
 #[derive(Default, PartialEq, Eq, Debug)]
 struct View {
     text: String,
     suggestions: BTreeSet<(String, String)>,
+    comments: BTreeSet<String>,
+    others: String,
 }
 
-fn attr_text(attrs: &Attrs, mark: &str, field: &str) -> Option<String> {
-    match attrs.get(mark)? {
-        Any::Map(m) => m.get(field).and_then(|v| match v {
-            Any::String(s) => Some(s.to_string()),
-            _ => None,
+/// The mark a formatting key stands for: y-prosemirror keys marks that may
+/// overlap as "<name>--<hash>".
+fn mark_name(key: &str) -> &str {
+    key.split_once("--").map_or(key, |(name, _)| name)
+}
+
+fn attr_text(value: &Any, field: &str) -> String {
+    match value {
+        Any::Map(m) => m.get(field).map_or(String::new(), |v| match v {
+            Any::String(s) => s.to_string(),
+            other => other.to_string(),
         }),
-        _ => Some(String::new()),
+        Any::String(s) => s.to_string(),
+        _ => String::new(),
     }
 }
 
@@ -52,6 +63,15 @@ fn walk<T: ReadTxn>(txn: &T, node: XmlOut, view: &mut View, depth: usize) {
         XmlOut::Element(el) => {
             view.text.push('<');
             view.text.push_str(el.tag());
+            // Attributes count too (a heading's level, a list's start).
+            let mut attrs: Vec<(String, String)> = el
+                .attributes(txn)
+                .map(|(k, v)| (k.to_string(), v.to_string(txn)))
+                .collect();
+            attrs.sort();
+            for (k, v) in attrs {
+                view.text.push_str(&format!(" {k}={v:?}"));
+            }
             view.text.push('>');
             for child in el.children(txn) {
                 walk(txn, child, view, depth + 1);
@@ -65,25 +85,25 @@ fn walk<T: ReadTxn>(txn: &T, node: XmlOut, view: &mut View, depth: usize) {
         }
         XmlOut::Text(t) => {
             for d in t.diff(txn, YChange::identity) {
-                let attrs = d.attributes.as_deref().cloned().unwrap_or_default();
-                for mark in ["insertion", "deletion"] {
-                    if attrs.contains_key(mark) {
-                        view.suggestions.insert((
-                            attr_text(&attrs, mark, "id").unwrap_or_default(),
-                            attr_text(&attrs, mark, "author").unwrap_or_default(),
-                        ));
+                let attrs: Attrs = d.attributes.as_deref().cloned().unwrap_or_default();
+                let mut inserted = false;
+                let mut marks: Vec<String> = Vec::new();
+                for (key, value) in attrs.iter() {
+                    match mark_name(key) {
+                        "insertion" | "deletion" => {
+                            inserted |= mark_name(key) == "insertion";
+                            view.suggestions
+                                .insert((attr_text(value, "id"), attr_text(value, "author")));
+                        }
+                        "comment" => {
+                            view.comments.insert(attr_text(value, "id"));
+                        }
+                        other => marks.push(format!("{other}={value}")),
                     }
                 }
-                if attrs.contains_key("insertion") {
+                if inserted {
                     continue;
                 }
-                let mut marks: Vec<&str> = attrs
-                    .keys()
-                    .map(|k| k.as_ref())
-                    // y-prosemirror keys marks that may overlap (comments)
-                    // as "comment--<hash>".
-                    .filter(|k| *k != "deletion" && *k != "comment" && !k.starts_with("comment--"))
-                    .collect();
                 marks.sort_unstable();
                 if !marks.is_empty() {
                     view.text.push('[');
@@ -106,26 +126,54 @@ fn view(doc: &Doc) -> View {
     for child in fragment.children(&txn) {
         walk(&txn, child, &mut out, 0);
     }
+    // Anything kept beside the document's body: a commenter adds nothing.
+    let mut others: Vec<String> = txn
+        .root_refs()
+        .filter(|(name, _)| *name != FRAGMENT)
+        .map(|(name, value)| format!("{name}={}", value.to_json(&txn)))
+        .collect();
+    others.sort();
+    out.others = others.join(";");
     out
 }
 
 /// Whether `update` from a commenter named `author` only comments and
 /// suggests, given the document so far (`parts`: its checkpoint and the
-/// updates after it).
+/// updates after it): the accepted text stays, new suggestions are theirs
+/// under new ids, and nobody else's suggestions or comments go.
 pub fn commenter_may(parts: &[&[u8]], update: &[u8], author: &str) -> Result<(), String> {
     let before = view(&load(parts)?);
     let mut all = parts.to_vec();
     all.push(update);
     let after = view(&load(&all)?);
-    if before.text != after.text {
+    if before.text != after.text || before.others != after.others {
         return Err("Someone who may comment suggests changes; the text itself stays.".into());
     }
-    if after
+    let known: std::collections::BTreeMap<&str, &str> = before
         .suggestions
-        .difference(&before.suggestions)
-        .any(|(_, by)| by != author)
+        .iter()
+        .map(|(id, by)| (id.as_str(), by.as_str()))
+        .collect();
+    for (id, by) in after.suggestions.difference(&before.suggestions) {
+        // A new suggestion: theirs, and not under someone else's id.
+        if by != author || known.get(id.as_str()).is_some_and(|other| *other != author) {
+            return Err("A suggestion is made in one's own name.".into());
+        }
+    }
+    let kept: BTreeSet<&str> = after
+        .suggestions
+        .iter()
+        .map(|(id, _)| id.as_str())
+        .collect();
+    if before
+        .suggestions
+        .iter()
+        .any(|(id, by)| by != author && !kept.contains(id.as_str()))
     {
-        return Err("A suggestion is made in one's own name.".into());
+        return Err("Someone else's suggestion stays until an editor decides.".into());
+    }
+    if !before.comments.is_subset(&after.comments) {
+        return Err("Comments stay until an editor resolves them.".into());
     }
     Ok(())
 }
@@ -136,7 +184,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use yrs::types::xml::XmlElementPrelim;
-    use yrs::{XmlElementRef, XmlTextPrelim, XmlTextRef};
+    use yrs::{Map, XmlElementRef, XmlTextPrelim, XmlTextRef};
 
     /// A document with one paragraph, as an editor wrote it.
     fn base() -> (Doc, Vec<u8>) {
@@ -178,12 +226,21 @@ mod tests {
         diff
     }
 
+    /// A suggestion mark as y-prosemirror writes it ("insertion--<hash>"
+    /// for marks that may overlap).
     fn mark(name: &str, author: &str) -> Attrs {
+        mark_with(name, "s1", author)
+    }
+
+    fn mark_with(name: &str, id: &str, author: &str) -> Attrs {
         let mut inner = HashMap::new();
-        inner.insert("id".to_string(), Any::from("s1"));
+        inner.insert("id".to_string(), Any::from(id));
         inner.insert("author".to_string(), Any::from(author));
         let mut attrs = Attrs::new();
-        attrs.insert(Arc::from(name), Any::Map(Arc::new(inner)));
+        attrs.insert(
+            Arc::from(format!("{name}--k{id}").as_str()),
+            Any::Map(Arc::new(inner)),
+        );
         attrs
     }
 
@@ -226,5 +283,54 @@ mod tests {
             );
         });
         assert!(commenter_may(&[&b], &forged, "Marek Nowak").is_err());
+        // Olena's suggestion is in the document; Marek may not add text
+        // under her suggestion's id, nor take her suggestion away.
+        let hers = change(&b, |doc, t| {
+            t.insert_with_attributes(
+                &mut doc.transact_mut(),
+                21,
+                ", church",
+                mark_with("insertion", "o1", "Olena Hrytsenko"),
+            );
+        });
+        let under_hers = {
+            let doc = Doc::with_client_id(3);
+            for u in [&b, &hers] {
+                doc.transact_mut()
+                    .apply_update(Update::decode_v1(u).unwrap())
+                    .unwrap();
+            }
+            let before = doc.transact().state_vector();
+            let t = text(&doc);
+            t.insert_with_attributes(
+                &mut doc.transact_mut(),
+                0,
+                "No ",
+                mark_with("insertion", "o1", "Marek Nowak"),
+            );
+            let diff = doc.transact().encode_diff_v1(&before);
+            diff
+        };
+        assert!(commenter_may(&[&b, &hers], &under_hers, "Marek Nowak").is_err());
+        let removed = {
+            let doc = Doc::with_client_id(4);
+            for u in [&b, &hers] {
+                doc.transact_mut()
+                    .apply_update(Update::decode_v1(u).unwrap())
+                    .unwrap();
+            }
+            let before = doc.transact().state_vector();
+            let t = text(&doc);
+            t.remove_range(&mut doc.transact_mut(), 21, 8);
+            let diff = doc.transact().encode_diff_v1(&before);
+            diff
+        };
+        assert!(commenter_may(&[&b, &hers], &removed, "Marek Nowak").is_err());
+        // Nothing beside the body.
+        let extra = change(&b, |doc, _| {
+            let m = doc.get_or_insert_map("notes");
+            m.insert(&mut doc.transact_mut(), "x", "y");
+        });
+        assert!(commenter_may(&[&b], &extra, "Marek Nowak").is_err());
     }
 }

@@ -235,12 +235,18 @@ async fn update(
         // own name, nothing of the text (checked here, not only in their
         // editor).
         let (base, _, after) = store::state(s, &item.id).await?;
-        let mut parts: Vec<&[u8]> = Vec::new();
-        if let Some(b) = &base {
-            parts.push(b);
-        }
-        parts.extend(after.iter().map(|(_, u)| u.as_slice()));
-        crate::guard::commenter_may(&parts, bytes, &me.name).map_err(|message| ApiError {
+        let mut owned: Vec<Vec<u8>> = base.into_iter().collect();
+        owned.extend(after.into_iter().map(|(_, u)| u));
+        let (update, name) = (bytes.to_vec(), me.name.clone());
+        // Decoding the document takes a while on a long one: not on the
+        // threads that answer requests.
+        let verdict = tokio::task::spawn_blocking(move || {
+            let parts: Vec<&[u8]> = owned.iter().map(Vec::as_slice).collect();
+            crate::guard::commenter_may(&parts, &update, &name)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?;
+        verdict.map_err(|message| ApiError {
             status: 403,
             code: "comment_only",
             message,
