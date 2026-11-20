@@ -109,6 +109,19 @@ impl App for FakeDrive {
         let drive: Arc<dyn Drive> = self.0.clone();
         services.provide("drive", drive);
     }
+    // The owners of items shared with the user, as the real drive answers.
+    fn search_owners<'a>(&'a self, _: &'a Instance, user: &'a str) -> BoxFuture<'a, Vec<String>> {
+        let owners = self
+            .0
+             .0
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|(owner, _, roles)| owner != user && roles.contains_key(user))
+            .map(|(owner, _, _)| owner.clone())
+            .collect();
+        Box::pin(async move { owners })
+    }
 }
 
 const B64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
@@ -360,6 +373,27 @@ fn two_people_edit_one_document_and_send_it_for_approval() {
             hits.iter().map(|h| h.title.clone()).collect::<Vec<_>>(),
             "{name}"
         );
+        // Olena, who may view it, finds it too; someone it is not shared
+        // with does not.
+        let titles = |who: &str| {
+            ortus_core::runtime::block_on(ortus_core::search::search(
+                &instance,
+                &id_of(who),
+                &ortus_core::search::Query::parse("shelter"),
+                10,
+            ))
+            .unwrap()
+            .into_iter()
+            .map(|h| h.title)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            vec!["Flood response plan 2026".to_string()],
+            titles("olena@ministry.example"),
+            "{name}"
+        );
+        signed_in(&instance, "jonas@ministry.example", Role::Member);
+        assert!(titles("jonas@ministry.example").is_empty(), "{name}");
 
         // Comments, assigned.
         let (status, c) = call(&client, &marek, "POST", &format!("/docs/documents/{doc}/comments"), Some(json!({"body": "Hydrology says 3.8 m is safer. @Anna can you confirm?", "quote": "4.0 m", "assign": "ana@ministry.example"}).to_string().into_bytes()), true);

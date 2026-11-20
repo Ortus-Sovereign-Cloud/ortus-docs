@@ -65,12 +65,42 @@ impl App for Docs {
         all
     }
 
+    // Documents are Drive items: whoever Drive lets see one finds it.
     fn search_owners<'a>(
         &'a self,
-        _instance: &'a Instance,
-        _user: &'a str,
+        instance: &'a Instance,
+        user: &'a str,
     ) -> BoxFuture<'a, Vec<String>> {
-        Box::pin(async { Vec::new() })
+        Box::pin(async move {
+            match instance.app("drive") {
+                Some(drive) => drive.search_owners(instance, user).await,
+                None => Vec::new(),
+            }
+        })
+    }
+
+    fn search_allowed<'a>(
+        &'a self,
+        instance: &'a Instance,
+        user: &'a str,
+        ids: Vec<String>,
+    ) -> BoxFuture<'a, Vec<String>> {
+        Box::pin(async move {
+            let Ok(drive) = instance
+                .services
+                .get::<dyn ortus_core::interfaces::Drive>(&instance.switches)
+                .await
+            else {
+                return Vec::new();
+            };
+            let mut seen = Vec::new();
+            for id in ids {
+                if let Ok(Some(_)) = drive.describe(user, &id).await {
+                    seen.push(id);
+                }
+            }
+            seen
+        })
     }
 
     fn forget_user<'a>(
