@@ -362,7 +362,56 @@ async fn send(
         .await?;
     }
     tx.commit().await?;
+    tell_current(instance, &review).await;
     Ok(ok(&review_json(instance, &review).await?))
+}
+
+/// The person whose turn it is in a route hears of it (an approval in the
+/// notification centre, with its due time).
+async fn tell_current(instance: &Instance, review: &str) {
+    let s = instance.store.as_ref();
+    let Ok(rows) = s
+        .query("SELECT st.user_id, st.due_at, r.doc_id, r.created_by FROM docs_review_steps st JOIN docs_reviews r ON r.id = st.review_id WHERE st.review_id = $1 AND st.state = 'current' AND r.state = 'open'", &[review.into()])
+        .await
+    else {
+        return;
+    };
+    for r in rows {
+        let (user, due, doc, by) = (
+            r.text(0).unwrap_or_default().to_string(),
+            r.int(1),
+            r.text(2).unwrap_or_default().to_string(),
+            r.text(3).unwrap_or_default().to_string(),
+        );
+        let name = match instance
+            .services
+            .get::<dyn ortus_core::interfaces::Drive>(&instance.switches)
+            .await
+        {
+            Ok(drive) => drive
+                .describe(&by, &doc)
+                .await
+                .ok()
+                .flatten()
+                .map(|i| i.name)
+                .unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        let mut args = json!({"what": name});
+        if let Some(d) = due {
+            args["due"] = json!(d);
+        }
+        let notice = ortus_core::notify::Notice {
+            app: "docs",
+            kind: ortus_core::notify::Kind::Approval,
+            title: &format!("Review: {name}"),
+            detail: "",
+            path: &format!("/docs?review={review}"),
+            key: Some("review"),
+            args,
+        };
+        let _ = ortus_core::notify::add(s, &user, &notice).await;
+    }
 }
 
 async fn review_json(instance: &Instance, id: &str) -> Result<Value, ApiError> {
@@ -625,6 +674,7 @@ async fn decide(
         )
         .await?;
     }
+    let approved = input.approve;
     if input.approve {
         store::advance(tx.as_mut(), id).await?;
     } else {
@@ -636,6 +686,9 @@ async fn decide(
         tx.execute("UPDATE docs_review_steps SET state = 'cancelled' WHERE review_id = $1 AND state = 'waiting'", &[id.into()]).await?;
     }
     tx.commit().await?;
+    if approved {
+        tell_current(instance, id).await;
+    }
     // The route is over: its signed PDF goes to the case (the hourly
     // sweep tries again if the records app could not take it now).
     let _ = file_record(instance, id).await;

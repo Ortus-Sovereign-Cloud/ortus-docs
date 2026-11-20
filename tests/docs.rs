@@ -436,6 +436,32 @@ fn two_people_edit_one_document_and_send_it_for_approval() {
             waiting["waiting"][0]["name"],
             "{name}"
         );
+        // Her turn: an approval in her notifications (not yet Ana's).
+        let (_, hers) = call(&client, &olena, "GET", "/notifications", None, false);
+        let approval = hers["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["kind"] == "approval")
+            .cloned()
+            .expect("an approval");
+        assert_eq!(
+            ("review", "Flood response plan 2026"),
+            (
+                approval["key"].as_str().unwrap(),
+                approval["args"]["what"].as_str().unwrap()
+            ),
+            "{name}"
+        );
+        let (_, anas) = call(&client, &ana, "GET", "/notifications", None, false);
+        assert!(
+            !anas["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "approval"),
+            "{name}: not yet"
+        );
         assert_eq!(
             403,
             call(
@@ -464,6 +490,15 @@ fn two_people_edit_one_document_and_send_it_for_approval() {
                 after["steps"][1]["state"].clone()
             ),
             "{name}"
+        );
+        let (_, anas) = call(&client, &ana, "GET", "/notifications", None, false);
+        assert!(
+            anas["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|i| i["kind"] == "approval"),
+            "{name}: now Ana's turn"
         );
         assert_eq!(
             400,
