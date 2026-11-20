@@ -80,6 +80,10 @@ const messages: Record<DocsKey, DocsMessage> = {
   noChanges: "Nic się nie zmieniło.",
   route: "Ścieżka",
   you: "Ty",
+  downloadWord: "Word (.docx)",
+  pdf: "PDF",
+  importWord: "Importuj plik Word",
+  notWord: "Nie udało się odczytać pliku jako dokumentu Word (.docx).",
   now: "teraz",
 };
 

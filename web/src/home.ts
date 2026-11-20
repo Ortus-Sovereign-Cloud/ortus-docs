@@ -2,6 +2,7 @@
 // documents themselves are in Drive.
 import { ApiError, LitElement, LocalizeController, call, controls, css, customElement, html, nothing, state } from "ortus-kit";
 import { t } from "./i18n.js";
+import { newFromDocx } from "./word.js";
 
 interface Waiting {
   id: string;
@@ -59,6 +60,16 @@ export class OrtusDocsHome extends LitElement {
       p {
         color: var(--ortus-text-3);
       }
+      label input {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        opacity: 0;
+      }
+      label.button {
+        position: relative;
+        cursor: pointer;
+      }
       .error {
         color: var(--ortus-red);
       }
@@ -86,10 +97,26 @@ export class OrtusDocsHome extends LitElement {
     }
   }
 
+  private async importWord(e: Event): Promise<void> {
+    const input = e.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) return;
+    this.error = "";
+    try {
+      const path = await newFromDocx(file);
+      history.pushState(null, "", path);
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    } catch {
+      this.error = t(this.localize, "notWord");
+    }
+  }
+
   override render() {
     return html`<div class="top">
         <h1>${t(this.localize, "docs")}</h1>
         <a class="button" href="/drive">${t(this.localize, "inDrive")}</a>
+        <label class="button">${t(this.localize, "importWord")}<input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" @change=${this.importWord} /></label>
         <button class="button primary" @click=${this.create}>${t(this.localize, "newDocument")}</button>
       </div>
       ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}

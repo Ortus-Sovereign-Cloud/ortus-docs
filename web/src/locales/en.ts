@@ -81,6 +81,10 @@ const en = {
   noChanges: "Nothing changed.",
   route: "Route",
   you: "You",
+  downloadWord: "Word (.docx)",
+  pdf: "PDF",
+  importWord: "Import a Word file",
+  notWord: "That file could not be read as a Word document (.docx).",
   now: "now",
 };
 

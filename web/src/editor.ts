@@ -4,7 +4,7 @@
 import { ApiError, LitElement, LocalizeController, call, controls, css, customElement, html, nothing, query, state } from "ortus-kit";
 import { baseKeymap, setBlockType, toggleMark } from "prosemirror-commands";
 import { keymap } from "prosemirror-keymap";
-import { EditorState, type Transaction } from "prosemirror-state";
+import { EditorState, TextSelection, type Transaction } from "prosemirror-state";
 import { addRowAfter, columnResizing, goToNextCell, tableEditing } from "prosemirror-tables";
 import { EditorView } from "prosemirror-view";
 import { redo, undo, yCursorPlugin, ySyncPlugin, yUndoPlugin } from "y-prosemirror";
@@ -13,6 +13,7 @@ import type { DocsKey } from "./locales/en.js";
 import { schema } from "./schema.js";
 import { asSuggestion, remote, settle, suggestions, type Suggestion } from "./suggest.js";
 import { Sync, type Here, type Opened } from "./sync.js";
+import { downloadDocx, printPdf } from "./word.js";
 
 interface Comment {
   id: string;
@@ -432,7 +433,7 @@ export class OrtusDocsEditor extends LitElement {
               selectionBuilder: () => ({ class: "ProseMirror-yjs-selection" }),
             }),
             yUndoPlugin(),
-            keymap({ "Mod-z": undo, "Mod-y": redo, "Mod-Shift-z": redo, "Mod-b": toggleMark(schema.marks.strong!), "Mod-i": toggleMark(schema.marks.em!), Tab: goToNextCell(1), "Shift-Tab": goToNextCell(-1) }),
+            keymap({ "Mod-z": undo, "Mod-y": redo, "Mod-Shift-z": redo, "Mod-b": toggleMark(schema.marks.strong!), "Mod-i": toggleMark(schema.marks.em!), Tab: (state, dispatch) => goToNextCell(1)(state, dispatch) || (addRowAfter(state, dispatch && ((tr) => dispatch(tr))) && this.view !== null && goToNextCell(1)(this.view.state, dispatch)), "Shift-Tab": goToNextCell(-1) }),
             keymap(baseKeymap),
             columnResizing(),
             tableEditing(),
@@ -482,7 +483,16 @@ export class OrtusDocsEditor extends LitElement {
     const cells = (type: typeof cell, n: number) => Array.from({ length: n }, () => type!.create(null, paragraph!.create()));
     const node = table!.create(null, [row!.create(null, cells(head, 3)), row!.create(null, cells(cell, 3)), row!.create(null, cells(cell, 3))]);
     this.command((state, dispatch) => {
-      dispatch?.(state.tr.replaceSelectionWith(node).scrollIntoView());
+      const from = state.selection.from;
+      const tr = state.tr.replaceSelectionWith(node);
+      // The cursor goes to the first cell.
+      let at = -1;
+      tr.doc.nodesBetween(Math.max(0, from - 2), tr.doc.content.size, (n, pos) => {
+        if (at < 0 && n.type === table) at = pos;
+        return at < 0;
+      });
+      if (at >= 0) tr.setSelection(TextSelection.near(tr.doc.resolve(at + 1)));
+      dispatch?.(tr.scrollIntoView());
       return true;
     });
   }
@@ -609,6 +619,9 @@ export class OrtusDocsEditor extends LitElement {
         <button @click=${() => this.command(addRowAfter)} aria-label=${t(this.localize, "addRow")}>+${t(this.localize, "row")}</button>
         <button @click=${this.startComment}>${t(this.localize, "comment")}</button>
         <button aria-pressed=${this.mode === "suggesting" ? "true" : "false"} ?disabled=${o.role === "view"} @click=${() => ((this.mode = this.mode === "suggesting" ? (this.canEdit() ? "editing" : "suggesting") : "suggesting"), this.view?.setProps({}))}>${this.mode === "suggesting" ? t(this.localize, "trackOn") : t(this.localize, "trackOff")}</button>
+        <span class="spacer"></span>
+        <button @click=${() => this.view && downloadDocx(o.name, this.view.state.doc.toJSON())}>${t(this.localize, "downloadWord")}</button>
+        <button @click=${() => printPdf(o.name, this.page)}>${t(this.localize, "pdf")}</button>
       </div>
       <div class="body">
         <div class="page"></div>

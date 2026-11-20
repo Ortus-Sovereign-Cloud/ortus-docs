@@ -80,6 +80,10 @@ const messages: Record<DocsKey, DocsMessage> = {
   noChanges: "لم يتغير شيء.",
   route: "المسار",
   you: "أنت",
+  downloadWord: "Word ‏(.docx)",
+  pdf: "PDF",
+  importWord: "استيراد ملف Word",
+  notWord: "تعذّرت قراءة الملف كمستند Word ‏(.docx).",
   now: "الآن",
 };
 

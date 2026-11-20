@@ -12,7 +12,18 @@ if grep -nE '(margin|padding|border)-(left|right)|^[[:space:]]+(left|right):|tex
   echo "physical CSS or a style attribute in web/src" >&2
   exit 1
 fi
-(cd web && npm ci --silent && npx tsc --noEmit && npm run build --silent)
+(cd web && npm ci --silent && npm audit --omit=dev --audit-level=moderate && npx tsc --noEmit && npm run build --silent)
+# One copy each of the editor's core libraries: two copies of one break
+# the editor quietly (typing lost).
+(cd web && node -e '
+const lock = require("./package-lock.json").packages, seen = {};
+for (const [path, p] of Object.entries(lock)) {
+  const name = path.split("node_modules/").pop();
+  if (/^(prosemirror-[a-z-]+|yjs|y-prosemirror|y-protocols|lib0)$/.test(name)) (seen[name] ??= new Set()).add(p.version);
+}
+const twice = Object.entries(seen).filter(([, v]) => v.size > 1);
+if (twice.length) { console.error("two versions of:", twice.map(([n, v]) => n + " " + [...v].join(", ")).join("; ")); process.exit(1); }
+')
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
