@@ -572,6 +572,11 @@ async fn decide(
             // A recent strong sign-in, or a confirmation (step-up), counts:
             // not a session made by a phone link or a recovery code.
             let fresh = ortus_core::auth::step_up::confirmed(s, &session).await?;
+            // No password given: the client confirms (a passkey, or the
+            // password and code) through the shell's step-up and tries again.
+            if !fresh && input.password.as_deref().is_none_or(str::is_empty) {
+                ortus_core::auth::step_up::require(s, &session).await?;
+            }
             let confirmed = match input.password.as_deref().filter(|p| !p.is_empty()) {
                 Some(p) => {
                     // As slow to guess as signing in.

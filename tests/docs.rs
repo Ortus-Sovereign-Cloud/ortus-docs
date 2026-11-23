@@ -992,7 +992,8 @@ fn a_route_signs_the_pdf_and_files_it_to_the_case() {
             .0,
             "{name}"
         );
-        // Katarzyna's sign-in is an hour old: she confirms first.
+        // Katarzyna's sign-in is an hour old: she confirms first (the shell's
+        // step-up, or her password here).
         ortus_core::runtime::block_on(instance.store.execute(
             "UPDATE core_sessions SET created_at = created_at - 3600000 WHERE user_id = $1",
             &[id_of("katarzyna@ministry.example").as_str().into()],
@@ -1004,7 +1005,7 @@ fn a_route_signs_the_pdf_and_files_it_to_the_case() {
             json!({"approve": true}),
         );
         assert_eq!(
-            (403, json!("confirm")),
+            (403, json!("step_up")),
             (status, confirm["error"]["code"].clone()),
             "{name}: {confirm}"
         );
