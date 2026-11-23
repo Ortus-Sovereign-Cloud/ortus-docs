@@ -108,6 +108,15 @@ pub const MIGRATIONS: &[Migration] = &[
         name: "the drive owner of each document",
         sql: "ALTER TABLE docs_documents ADD COLUMN drive_owner TEXT",
     },
+    Migration {
+        version: 6,
+        name: "wake editors",
+        // With PostgreSQL, every program's editors hear of an update or a
+        // presence change of a document (ortus_core::changes), on commit.
+        sql: "{{postgres}} CREATE OR REPLACE FUNCTION docs_wake() RETURNS trigger LANGUAGE plpgsql AS 'BEGIN PERFORM pg_notify(''ortus_changes'', ''docs''); RETURN NULL; END';
+    {{postgres}} CREATE TRIGGER docs_updates_wake AFTER INSERT ON docs_updates FOR EACH STATEMENT EXECUTE FUNCTION docs_wake();
+    {{postgres}} CREATE TRIGGER docs_presence_wake AFTER INSERT OR DELETE ON docs_presence FOR EACH STATEMENT EXECUTE FUNCTION docs_wake()",
+    },
 ];
 
 /// An update larger than this is refused.
@@ -324,6 +333,7 @@ pub async fn add_update(
     )
     .await?;
     tx.commit().await?;
+    ortus_core::changes::wake("docs");
     Ok(seq)
 }
 
@@ -379,6 +389,7 @@ pub async fn set_presence(
     }
     tx.execute("INSERT INTO docs_presence (doc_id, client, user_id, state, at) VALUES ($1, $2, $3, $4, $5)", &[doc.into(), client.into(), user.into(), state.into(), now().into()]).await?;
     tx.commit().await?;
+    ortus_core::changes::wake("docs");
     Ok(())
 }
 

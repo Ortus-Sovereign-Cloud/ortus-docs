@@ -432,7 +432,8 @@ fn events(
             if store::now() - started > 600_000 {
                 return;
             }
-            tokio::time::sleep(Duration::from_millis(300)).await;
+            // Until a document changes (or a few seconds).
+            ortus_core::changes::wait("docs", Duration::from_secs(3)).await;
         }
     });
     response
