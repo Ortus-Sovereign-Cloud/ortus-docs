@@ -429,9 +429,6 @@ struct Decision {
     password: Option<String>,
 }
 
-/// How recent a sign-in must be to sign without confirming again.
-const FRESH_MS: i64 = 10 * 60 * 1000;
-
 pub(crate) async fn signing(
     instance: &Instance,
 ) -> Option<Arc<dyn ortus_core::interfaces::Signing>> {
@@ -572,7 +569,9 @@ async fn decide(
             let session = ortus_core::auth::current(request, instance)
                 .await
                 .ok_or_else(ApiError::sign_in)?;
-            let fresh = now() - session.created_at < FRESH_MS;
+            // A recent strong sign-in, or a confirmation (step-up), counts:
+            // not a session made by a phone link or a recovery code.
+            let fresh = ortus_core::auth::step_up::confirmed(s, &session).await?;
             let confirmed = match input.password.as_deref().filter(|p| !p.is_empty()) {
                 Some(p) => {
                     // As slow to guess as signing in.
