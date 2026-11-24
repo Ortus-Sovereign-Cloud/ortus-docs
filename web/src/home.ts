@@ -73,6 +73,24 @@ export class OrtusDocsHome extends LitElement {
       .error {
         color: var(--ortus-red);
       }
+      /* A phone: the buttons wrap under the title. */
+      @media (max-width: 720px) {
+        :host {
+          padding-block: 16px;
+          padding-inline: 12px;
+        }
+        .top {
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+        h1 {
+          flex-basis: 100%;
+        }
+        .button {
+          min-block-size: 44px;
+          margin: 0;
+        }
+      }
     `,
   ];
 

@@ -59,7 +59,7 @@ export class OrtusDocsEditor extends LitElement {
       :host {
         display: grid;
         grid-template-rows: auto auto 1fr;
-        min-block-size: 100vh;
+        min-block-size: var(--ortus-screen, 100vh);
         color: var(--ortus-text);
       }
       :host([embedded]) {
@@ -302,6 +302,8 @@ export class OrtusDocsEditor extends LitElement {
       }
       dialog {
         inline-size: min(720px, 94vw);
+        max-inline-size: calc(100vw - 16px);
+        box-sizing: border-box;
         padding: 0;
         border-radius: 22px;
         border: 1px solid var(--ortus-line-strong);
@@ -343,6 +345,99 @@ export class OrtusDocsEditor extends LitElement {
         color: var(--ortus-red);
         font-size: 14px;
       }
+      .phone {
+        display: none;
+      }
+      /* A phone: one pane at a time. The page fills the width; the
+         comments and suggestions are behind a button, with a way back.
+         The header and the toolbar wrap. */
+      @media (max-width: 720px) {
+        :host {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        header {
+          flex-wrap: wrap;
+          gap: 8px;
+          padding-block: 8px;
+          padding-inline: 4px 12px;
+        }
+        .back {
+          inline-size: 44px;
+          block-size: 44px;
+        }
+        .title {
+          flex: 1 1 calc(100% - 60px);
+        }
+        .title input {
+          inline-size: 100%;
+          min-block-size: 32px;
+        }
+        .spacer {
+          display: none;
+        }
+        header .people {
+          margin-inline-start: auto;
+        }
+        select.mode,
+        .button {
+          min-block-size: 44px;
+        }
+        .tools {
+          flex-wrap: wrap;
+          gap: 4px;
+          padding-block: 6px;
+          padding-inline: 8px;
+        }
+        .tools button,
+        .tools select {
+          min-block-size: 44px;
+          min-inline-size: 44px;
+          padding-inline: 10px;
+        }
+        .phone {
+          display: inline-flex;
+        }
+        .body {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 12px;
+          padding-block: 12px;
+          padding-inline: 8px;
+        }
+        .page {
+          padding-block: 24px;
+          padding-inline: 18px;
+        }
+        aside {
+          display: none;
+        }
+        .body.notes .page,
+        .body.notes > .error {
+          display: none;
+        }
+        .body.notes aside {
+          display: grid;
+        }
+        .notes-back {
+          justify-self: start;
+          inline-size: auto;
+          gap: 6px;
+        }
+        .ProseMirror table {
+          display: block;
+          overflow-x: auto;
+        }
+        .step select {
+          min-block-size: 44px;
+        }
+        .step {
+          grid-template-columns: minmax(0, 1fr);
+          padding-block-end: 8px;
+          border-block-end: 1px solid var(--ortus-line);
+        }
+        dialog form {
+          padding: 16px;
+        }
+      }
     `,
   ];
 
@@ -361,6 +456,8 @@ export class OrtusDocsEditor extends LitElement {
   /** An administrator with the records app may publish a must-read. */
   @state() private canPublish = false;
   @state() private published = false;
+  /** On a phone: the comments and suggestions show instead of the page. */
+  @state() private notesOpen = false;
   @query(".page") private page!: HTMLElement;
   private view: EditorView | null = null;
   private sync: Sync | null = null;
@@ -524,6 +621,7 @@ export class OrtusDocsEditor extends LitElement {
     }
     this.error = "";
     this.draftComment = { quote: view.state.doc.textBetween(from, to, " ").slice(0, 300), from, to };
+    this.notesOpen = true;
   }
 
   private async saveComment(e: Event): Promise<void> {
@@ -671,10 +769,13 @@ export class OrtusDocsEditor extends LitElement {
         <span class="spacer"></span>
         <button @click=${() => this.view && downloadDocx(o.name, this.view.state.doc.toJSON())}>${t(this.localize, "downloadWord")}</button>
         <button @click=${() => printPdf(o.name, this.page)}>${t(this.localize, "pdf")}</button>
+        <button class="phone" aria-expanded=${this.notesOpen ? "true" : "false"} @click=${() => (this.notesOpen = !this.notesOpen)}>${t(this.localize, "notes")} (${this.list.length + threads.length})</button>
       </div>
-      <div class="body">
+      <div class="body ${this.notesOpen ? "notes" : ""}">
+        ${this.error && !this.notesOpen ? html`<p class="error phone" role="alert">${this.error}</p>` : nothing}
         <div class="page"></div>
         <aside aria-label=${t(this.localize, "notes")}>
+          <button class="button phone notes-back" @click=${() => (this.notesOpen = false)}><span aria-hidden="true">${document.dir === "rtl" ? "›" : "‹"}</span>${t(this.localize, "back")}</button>
           ${this.error ? html`<p class="error" role="alert">${this.error}</p>` : nothing}
           ${this.draftComment
             ? html`<form class="card" @submit=${this.saveComment} aria-label=${t(this.localize, "newComment")}>

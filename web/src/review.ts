@@ -57,7 +57,7 @@ export class OrtusDocsReview extends LitElement {
     css`
       :host {
         display: block;
-        min-block-size: 100vh;
+        min-block-size: var(--ortus-screen, 100vh);
         color: var(--ortus-text);
       }
       header {
@@ -286,6 +286,76 @@ export class OrtusDocsReview extends LitElement {
         color: var(--ortus-red);
         margin: 0;
       }
+      .phone {
+        display: none;
+      }
+      /* A phone: one pane at a time. The document first; the decision
+         and the route behind a button, with a way back. */
+      @media (max-width: 720px) {
+        header {
+          flex-wrap: wrap;
+          gap: 8px;
+          padding-block: 8px;
+          padding-inline: 4px 12px;
+        }
+        header h1 {
+          min-inline-size: 0;
+          overflow-wrap: anywhere;
+        }
+        .phone {
+          display: inline-flex;
+        }
+        .up {
+          align-items: center;
+          justify-content: center;
+          inline-size: 44px;
+          block-size: 44px;
+          border: 0;
+          background: none;
+          color: var(--ortus-text);
+          font-size: 18px;
+          cursor: pointer;
+        }
+        .button {
+          min-block-size: 44px;
+        }
+        .body {
+          grid-template-columns: minmax(0, 1fr);
+          gap: 12px;
+          padding-block: 12px;
+          padding-inline: 8px;
+        }
+        .page {
+          padding-block: 24px;
+          padding-inline: 18px;
+        }
+        .page table {
+          display: block;
+          overflow-x: auto;
+        }
+        .boxes {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        aside {
+          display: none;
+        }
+        .body.side .page {
+          display: none;
+        }
+        .body.side aside {
+          display: grid;
+        }
+        .side-back {
+          justify-self: start;
+          gap: 6px;
+        }
+        .card {
+          padding: 16px;
+        }
+        .row {
+          flex-wrap: wrap;
+        }
+      }
     `,
   ];
 
@@ -300,6 +370,8 @@ export class OrtusDocsReview extends LitElement {
   @state() private error = "";
   @state() private busy = false;
   @state() private confirming = false;
+  /** On a phone: the decision and the route show instead of the document. */
+  @state() private side = false;
 
   override connectedCallback(): void {
     super.connectedCallback();
@@ -394,11 +466,13 @@ export class OrtusDocsReview extends LitElement {
     const next = mine ? r.steps.find((s) => s.n === mine.n + 1) : undefined;
     const changed = (this.doc?.content ?? []).filter((b) => b.type !== "table" && this.isNew(b)).map((b) => this.textOf(b));
     return html`<header>
+        <button class="phone up" aria-label=${t(this.localize, "back")} @click=${() => location.assign("/docs")}>${document.dir === "rtl" ? "›" : "‹"}</button>
         <h1><a href="/docs">${t(this.localize, "approvals")}</a> / ${this.name} · v${r.version}</h1>
         ${r.case ? html`<span class="case">${t(this.localize, "caseLabel")} <b>${r.case}</b></span>` : nothing}
         ${this.label ? html`<span class="label">${this.label.toUpperCase()}</span>` : nothing}
+        <button class="button phone ${mine ? "primary" : ""}" aria-expanded=${this.side ? "true" : "false"} @click=${() => (this.side = !this.side)}>${mine ? t(this.localize, "yourTurn") : t(this.localize, "approvalRoute")}</button>
       </header>
-      <div class="body">
+      <div class="body ${this.side ? "side" : ""}">
         <article class="page" aria-label=${this.name}>
           ${this.edited ? html`<p class="edited" role="note">${t(this.localize, "editedSince", { n: r.version })}</p>` : nothing}
           ${(this.doc?.content ?? []).map((b) => this.block(b))}
@@ -415,6 +489,7 @@ export class OrtusDocsReview extends LitElement {
             : nothing}
         </article>
         <aside>
+          <button class="button phone side-back" @click=${() => (this.side = false)}><span aria-hidden="true">${document.dir === "rtl" ? "›" : "‹"}</span>${t(this.localize, "back")}</button>
           ${mine
             ? html`<section class="card turn" aria-label=${t(this.localize, "yourTurn")}>
                 <small>${t(this.localize, "yourTurnStep", { n: mine.n, count: r.steps.length })}</small>
