@@ -37,13 +37,21 @@ test("docs on a phone: the list, the editor with its comments, the review", asyn
   const text = editor.locator(".ProseMirror");
   await text.click();
   await page.keyboard.type("Route A runs along the ring road to the stadium car park.");
+  await page.keyboard.press("Enter");
+  // A table: it scrolls inside its own box if it must.
+  await editor.getByRole("toolbar").getByRole("button", { name: en.table, exact: true }).click();
+  for (const cell of ["Route", "Starts at", "Ends at", "A", "Riverside school", "Stadium car park", "B", "Old town square", "Hill district clinic"]) {
+    await page.keyboard.type(cell);
+    await page.keyboard.press("Tab");
+  }
+  await expect(text.locator("table")).toContainText("Hill district clinic");
   await expect(editor.getByText(en.saved)).toBeVisible();
   await fullWidth(editor, editor.locator(".page"));
   await fits(page, editor);
   await page.screenshot({ path: "test-results/phone-docs-editor.png" });
 
   // A comment: the notes are the whole screen, then back to the page.
-  await text.getByText("stadium", { exact: false }).dblclick();
+  await text.getByText("ring road", { exact: false }).dblclick();
   await editor.getByRole("toolbar").getByRole("button", { name: en.comment, exact: true }).click();
   const form = editor.getByRole("form", { name: en.newComment });
   await expect(editor.locator(".page")).toBeHidden();
@@ -76,6 +84,7 @@ test("docs on a phone: the list, the editor with its comments, the review", asyn
   const review = page.locator("ortus-docs-review");
   const article = review.getByRole("article");
   await expect(article).toContainText("ring road");
+  await expect(article.locator("table")).toContainText("Hill district clinic");
   await fullWidth(review, article);
   await fits(page, review);
   await page.screenshot({ path: "test-results/phone-docs-review.png" });
@@ -91,4 +100,7 @@ test("docs on a phone: the list, the editor with its comments, the review", asyn
   await review.getByRole("button", { name: en.yourTurn, exact: true }).click();
   await review.getByRole("button", { name: en.approve }).click();
   await expect(review.getByRole("status")).toHaveText(en.allApproved);
+  // Back to the list.
+  await review.locator("header").getByRole("button", { name: en.back, exact: true }).click();
+  await expect(home.getByRole("button", { name: en.newDocument })).toBeVisible();
 });

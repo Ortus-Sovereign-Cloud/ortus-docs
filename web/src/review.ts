@@ -299,6 +299,7 @@ export class OrtusDocsReview extends LitElement {
           padding-inline: 4px 12px;
         }
         header h1 {
+          flex: 1 1 calc(100% - 60px);
           min-inline-size: 0;
           overflow-wrap: anywhere;
         }
@@ -329,8 +330,7 @@ export class OrtusDocsReview extends LitElement {
           padding-block: 24px;
           padding-inline: 18px;
         }
-        .page table {
-          display: block;
+        .tablebox {
           overflow-x: auto;
         }
         .boxes {
@@ -432,9 +432,9 @@ export class OrtusDocsReview extends LitElement {
       case "blockquote":
         return html`<blockquote>${(node.content ?? []).map((b) => this.block(b))}</blockquote>`;
       case "table":
-        return html`<table>
+        return html`<div class="tablebox"><table>
           ${(node.content ?? []).map((row) => html`<tr>${(row.content ?? []).map((cell) => (cell.type === "table_header" ? html`<th>${this.textOf(cell)}</th>` : html`<td>${this.textOf(cell)}</td>`))}</tr>`)}
-        </table>`;
+        </table></div>`;
       default:
         return nothing;
     }

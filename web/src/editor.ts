@@ -422,8 +422,7 @@ export class OrtusDocsEditor extends LitElement {
           inline-size: auto;
           gap: 6px;
         }
-        .ProseMirror table {
-          display: block;
+        .ProseMirror .tableWrapper {
           overflow-x: auto;
         }
         .step select {
