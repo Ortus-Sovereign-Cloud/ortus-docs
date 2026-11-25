@@ -108,7 +108,7 @@ export class OrtusDocsHome extends LitElement {
   private async create(): Promise<void> {
     try {
       const made = await call<{ id: string; path: string }>("POST", "/docs/documents", { name: t(this.localize, "untitled") });
-      history.pushState(null, "", made.path);
+      history.pushState({ fresh: true }, "", made.path);
       window.dispatchEvent(new PopStateEvent("popstate"));
     } catch (e) {
       this.error = e instanceof ApiError ? e.message : String(e);

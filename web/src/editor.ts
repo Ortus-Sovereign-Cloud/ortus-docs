@@ -502,6 +502,15 @@ export class OrtusDocsEditor extends LitElement {
       this.mode = this.canEdit() ? "editing" : opened.role === "comment" ? "suggesting" : "viewing";
       await this.updateComplete;
       this.mount(opened);
+      // Focus would be lost with the page that opened the document: it
+      // goes to the name (selected in a new one, to type over). Not to the
+      // text, which would show a cursor to everyone else here.
+      const name = this.renderRoot.querySelector<HTMLInputElement>(".title input");
+      if (history.state?.fresh && this.canEdit()) {
+        name?.focus();
+        name?.select();
+        history.replaceState(null, "", location.href);
+      } else if (!document.activeElement || document.activeElement === document.body) name?.focus();
       await this.loadComments();
       const [me, apps] = await Promise.all([call<{ role: string }>("GET", "/me"), call<{ apps: { id: string }[] }>("GET", "/apps")]);
       this.canPublish = (me.role === "admin" || me.role === "owner") && apps.apps.some((a) => a.id === "records");

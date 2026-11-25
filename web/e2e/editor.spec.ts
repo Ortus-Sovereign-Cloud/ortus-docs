@@ -14,6 +14,8 @@ test("a new document is written and saved", async ({ page }) => {
   await page.locator("ortus-docs-home").getByRole("button", { name: en.newDocument }).click();
   await expect(editor(page).getByRole("textbox", { name: en.untitled })).toBeVisible();
   address = page.url();
+  // Focus moves to the new document's name, ready to type over.
+  await expect(editor(page).getByLabel(en.docName)).toBeFocused();
   await editor(page).getByLabel(en.docName).fill("Flood response plan 2026");
   await editor(page).getByLabel(en.docName).press("Enter");
   const text = editor(page).getByRole("textbox", { name: en.untitled });
